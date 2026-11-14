@@ -1,0 +1,14 @@
+{
+  "appId": "pl.z0z6.cointracko",
+  "appName": "CoinTracko",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#f5f5f7"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_cointracko",
+      "iconColor": "#0A84FF"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CoinTracko</string>
+    <string name="title_activity_main">CoinTracko</string>
+    <string name="package_name">pl.z0z6.cointracko</string>
+    <string name="custom_url_scheme">pl.z0z6.cointracko</string>
+</resources>

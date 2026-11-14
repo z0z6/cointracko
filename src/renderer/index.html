@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' data: blob: https://api.coingecko.com https://api.anthropic.com;">
+  <title>CoinTracko</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="window">
+    <header class="titlebar">
+      <div class="titlebar-left"></div>
+      <div class="titlebar-title" id="window-title">CoinTracko</div>
+      <div class="titlebar-right">
+        <div class="traffic" id="traffic">
+          <button class="tl min" data-act="minimize" title="Minimalizuj" aria-label="Minimalizuj"><svg viewBox="0 0 10 10"><path d="M2.5 5h5"/></svg></button>
+          <button class="tl max" data-act="maximize" title="Maksymalizuj" aria-label="Maksymalizuj"><svg viewBox="0 0 10 10"><path d="M3 6.8V3h3.8zM7 3.2V7H3.2z"/></svg></button>
+          <button class="tl close" data-act="close" title="Zamknij" aria-label="Zamknij"><svg viewBox="0 0 10 10"><path d="M3 3l4 4M7 3L3 7"/></svg></button>
+        </div>
+      </div>
+    </header>
+    <div class="layout">
+      <aside class="sidebar" id="sidebar"></aside>
+      <main class="content" id="content"></main>
+    </div>
+  </div>
+  <div id="sheet-root"></div>
+  <div id="toast-root"></div>
+  <script src="icons.js"></script>
+  <script src="ui.js"></script>
+  <script src="core.js"></script>
+  <script src="market.js"></script>
+  <script src="platform.js"></script>
+  <script src="chart.js"></script>
+  <script src="ocr.js"></script>
+  <script src="dev-mock.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

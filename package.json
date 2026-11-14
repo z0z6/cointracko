@@ -1,0 +1,61 @@
+{
+  "name": "cointracko",
+  "productName": "CoinTracko",
+  "version": "1.0.0",
+  "description": "CoinTracko – notowania kryptowalut na żywo, portfel, alerty i wykresy",
+  "main": "src/main/main.js",
+  "author": "z0z6",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "postinstall": "node scripts/vendor.js",
+    "vendor": "node scripts/vendor.js",
+    "start": "electron .",
+    "test": "node test/run-tests.js",
+    "dist:linux": "electron-builder --linux AppImage --publish never",
+    "build:web": "node scripts/build-web.js",
+    "android:sync": "node scripts/build-web.js && cap sync android",
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/cli": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/local-notifications": "^8.0.0",
+    "@fontsource-variable/inter": "^5.0.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.0.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "build": {
+    "appId": "pl.z0z6.cointracko",
+    "productName": "CoinTracko",
+    "artifactName": "CoinTracko-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "afterPack": "build/afterPack.js",
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "executableName": "cointracko",
+      "icon": "build/icon.png",
+      "category": "Finance",
+      "synopsis": "Notowania kryptowalut, portfel i alerty",
+      "syncDesktopName": true
+    }
+  },
+  "desktopName": "cointracko.desktop"
+}
