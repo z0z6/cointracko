@@ -148,5 +148,45 @@
     return svg;
   }
 
-  window.Charts = { priceChart, sparkline };
+  // Wykres kołowy (pierścień, SVG). segments: [{ label, share, color, title }]
+  function donut(segments, size = 180, thickness = 28) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+    svg.setAttribute('width', size);
+    svg.setAttribute('height', size);
+    svg.setAttribute('class', 'donut');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', 'Struktura portfela: ' + segments.map((s) => `${s.label} ${(s.share * 100).toFixed(1)}%`).join(', '));
+    const c = size / 2;
+    const r = c - 2;
+    const ri = r - thickness;
+    const total = segments.reduce((a, s) => a + s.share, 0) || 1;
+    const gap = segments.length > 1 ? 0.018 : 0; // odstęp między segmentami (radiany)
+    const pt = (rad, ang) => `${(c + rad * Math.sin(ang)).toFixed(2)} ${(c - rad * Math.cos(ang)).toFixed(2)}`;
+    let a0 = 0;
+    for (const s of segments) {
+      const span = (s.share / total) * Math.PI * 2;
+      const a1 = a0 + span;
+      const path = document.createElementNS(ns, 'path');
+      if (segments.length === 1 || span >= Math.PI * 2 - 0.001) {
+        path.setAttribute('d', `M ${pt(r, 0)} A ${r} ${r} 0 1 1 ${pt(r, Math.PI)} A ${r} ${r} 0 1 1 ${pt(r, 0)} Z M ${pt(ri, 0)} A ${ri} ${ri} 0 1 0 ${pt(ri, Math.PI)} A ${ri} ${ri} 0 1 0 ${pt(ri, 0)} Z`);
+        path.setAttribute('fill-rule', 'evenodd');
+      } else {
+        const g = Math.min(gap, span / 3);
+        const s0 = a0 + g / 2, s1 = a1 - g / 2;
+        const large = s1 - s0 > Math.PI ? 1 : 0;
+        path.setAttribute('d', `M ${pt(r, s0)} A ${r} ${r} 0 ${large} 1 ${pt(r, s1)} L ${pt(ri, s1)} A ${ri} ${ri} 0 ${large} 0 ${pt(ri, s0)} Z`);
+      }
+      path.setAttribute('fill', s.color);
+      const title = document.createElementNS(ns, 'title');
+      title.textContent = s.title || s.label;
+      path.appendChild(title);
+      svg.appendChild(path);
+      a0 = a1;
+    }
+    return svg;
+  }
+
+  window.Charts = { priceChart, sparkline, donut };
 })();

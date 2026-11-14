@@ -13,7 +13,7 @@ let passed = 0;
 function test(name, fn) {
   try { fn(); passed++; console.log('  ✓ ' + name); } catch (e) { console.error('  ✗ ' + name + '\n    ' + (e.stack || e.message)); process.exitCode = 1; }
 }
-const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps * Math.max(1, Math.abs(b)), `${a} ≠ ${b}`);
+const near = (a, b, msg) => assert.ok(Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b)), `${a} ≠ ${b}${msg ? ' – ' + msg : ''}`);
 
 const COINS = [
   { id: 'bitcoin', symbol: 'btc', name: 'Bitcoin', image: 'b.png' },
@@ -184,6 +184,112 @@ test('parseOcrText: nieczytelny symbol, ilość z wiersza nad nazwą', () => {
   near(by.USDT, 1594.75);
   near(by.BTC, 0.5);
   assert.strictEqual(rows.length, 2);
+});
+
+console.log('Partie zakupu');
+const RATES = { usd: 1, pln: 4, eur: 0.5 };
+test('positionStats: średnia cena, zysk niezrealizowany, część bez ceny', () => {
+  const lots = [
+    { id: 'a', type: 'buy', date: '2025-01-10', amount: 1, price: 100, currency: 'usd' },
+    { id: 'b', type: 'buy', date: '2025-03-01', amount: 3, price: 200, currency: 'usd' }
+  ];
+  const st = Core.positionStats(lots, 5, 300, 'usd', RATES);
+  near(st.lotQty, 4); near(st.untracked, 1); near(st.total, 5);
+  near(st.cost, 700); near(st.avgPrice, 175);
+  near(st.value, 1500);
+  near(st.pnl, 4 * 300 - 700); near(st.pnlPct, (500 / 700) * 100);
+  assert.strictEqual(st.firstDate, '2025-01-10');
+});
+test('positionStats: sprzedaż zmniejsza koszt proporcjonalnie i daje zysk zrealizowany', () => {
+  const lots = [
+    { id: 'a', type: 'buy', date: '2025-01-01', amount: 2, price: 100, currency: 'usd' },
+    { id: 'b', type: 'buy', date: '2025-02-01', amount: 2, price: 300, currency: 'usd' },
+    { id: 'c', type: 'sell', date: '2025-03-01', amount: 1, price: 500, currency: 'usd' }
+  ];
+  const st = Core.positionStats(lots, 0, 400, 'usd', RATES);
+  near(st.total, 3); near(st.cost, 600); near(st.avgPrice, 200);
+  near(st.realized, 500 - 200);
+  near(st.pnl, 3 * 400 - 600);
+  near(Core.lotsNet(lots), 3);
+});
+test('positionStats: przeliczenie waluty partii i brak ceny', () => {
+  const st = Core.positionStats([{ id: 'a', type: 'buy', date: '2025-01-01', amount: 2, price: 400, currency: 'pln' }, { id: 'b', type: 'buy', date: '', amount: 1, price: null, currency: 'usd' }], 3, 150, 'usd', RATES);
+  near(st.cost, 200); near(st.knownQty, 2); near(st.pnl, 100); near(st.value, 450);
+  const none = Core.positionStats([], 2, 10, 'usd', RATES);
+  assert.strictEqual(none.pnl, null); near(none.value, 20); near(none.untracked, 2);
+  const r = Core.lotResult({ type: 'buy', amount: 2, price: 400, currency: 'pln' }, 150, 'usd', RATES);
+  near(r.cost, 200); near(r.pnl, 100); near(r.pnlPct, 50);
+});
+test('applyLots / setTotal: łączna ilość = partie + część bez daty', () => {
+  let d = { watch: [], holdings: { btc: 1 }, lots: {}, alerts: [] };
+  d = Core.applyLots(d, 'btc', [{ type: 'buy', date: '2025-05-05', amount: 0.5, price: 10, currency: 'usd' }]);
+  near(d.holdings.btc, 1.5);
+  assert.ok(d.lots.btc[0].id);
+  d = Core.applyLots(d, 'btc', [...d.lots.btc, { type: 'buy', date: '2025-01-01', amount: 2, price: 5, currency: 'usd' }]);
+  near(d.holdings.btc, 3.5);
+  assert.strictEqual(d.lots.btc[0].date, '2025-01-01', 'partie posortowane wg daty');
+  d = Core.setTotal(d, 'btc', 1);
+  near(d.holdings.btc, 2.5, 'ilość nie spada poniżej sumy partii');
+  d = Core.setTotal(d, 'btc', 10); near(d.holdings.btc, 10);
+  d = Core.applyLots(d, 'btc', []);
+  near(d.holdings.btc, 7.5); assert.strictEqual(d.lots.btc, undefined);
+  d = Core.applyLots({ watch: [], holdings: {}, lots: {}, alerts: [] }, 'eth', [{ type: 'buy', amount: 1, price: 1 }, { type: 'sell', amount: 1, price: 2 }]);
+  assert.strictEqual(d.holdings.eth, undefined);
+  assert.strictEqual(d.lots.eth.length, 2, 'historia zamkniętej pozycji zostaje');
+});
+
+console.log('Statystyki');
+test('portfolioStats: zainwestowano, zysk, koncentracja, najlepsze/najgorsze', () => {
+  const data = { holdings: { btc: 1, eth: 10, usdt: 500 }, lots: { btc: [{ id: '1', type: 'buy', date: '2025-02-02', amount: 1, price: 500, currency: 'usd' }], eth: [{ id: '2', type: 'buy', date: '2025-01-01', amount: 10, price: 60, currency: 'usd' }] } };
+  const market = { btc: { price: 1000, change24h: 10, change7d: 25, change1h: 1 }, eth: { price: 50, change24h: -5, change7d: -10, change1h: 0 }, usdt: { price: 1, change24h: 0, change7d: 0, change1h: 0 } };
+  const st = Core.portfolioStats(data, market, 'usd', RATES, (id) => ({ symbol: id, name: id }));
+  near(st.total, 2000); near(st.cost, 1100); near(st.pnl, 400); near(st.pnlPct, (400 / 1100) * 100);
+  near(st.costCoverage, 1500 / 2000); near(st.stableShare, 0.25);
+  assert.strictEqual(st.largest.id, 'btc');
+  assert.strictEqual(st.best24h.id, 'btc'); assert.strictEqual(st.worst24h.id, 'eth');
+  assert.strictEqual(st.bestPnl.id, 'btc'); assert.strictEqual(st.worstPnl.id, 'eth');
+  near(st.effectiveAssets, 1 / (0.25 + 0.0625 + 0.0625));
+  near(st.change7dPct, (2000 / (800 + 500 / 0.9 + 500) - 1) * 100);
+  assert.strictEqual(st.firstDate, '2025-01-01'); assert.strictEqual(st.lotsCount, 2);
+});
+test('allocation, combineHistory, seriesStats', () => {
+  const items = Array.from({ length: 9 }, (_, i) => ({ id: 'c' + i, value: 9 - i, share: (9 - i) / 45 }));
+  const a = Core.allocation(items, (id) => id.toUpperCase(), 6);
+  assert.strictEqual(a.length, 7); assert.strictEqual(a[6].label, 'Inne'); near(a[6].value, 3 + 2 + 1);
+  near(a.reduce((s2, x) => s2 + x.share, 0), 1);
+  const h = Core.combineHistory([{ amount: 2, points: [[0, 10], [100, 20]] }, { amount: 1, points: [[0, 5], [50, 5], [100, 15]] }], 3);
+  assert.deepStrictEqual(h.map((p) => p[0]), [0, 50, 100]);
+  near(h[0][1], 25); near(h[1][1], 35); near(h[2][1], 55);
+  const ss = Core.seriesStats([[0, 100], [1, 150], [2, 90], [3, 120]]);
+  near(ss.changePct, 20); near(ss.maxDrawdownPct, -40); assert.strictEqual(ss.max[1], 150); assert.strictEqual(ss.min[1], 90);
+  assert.strictEqual(Core.seriesStats([]), null);
+});
+
+console.log('Eksport i import');
+test('plik eksportu przenosi portfel między urządzeniami', () => {
+  const data = Core.sanitizeData({ watch: [{ id: 'btc', symbol: 'btc', name: 'Bitcoin' }], holdings: { btc: 2, eth: 1 }, lots: { btc: [{ id: 'x', type: 'buy', date: '2025-01-01', amount: 1.5, price: 100, currency: 'pln' }, { amount: -1 }] }, alerts: [{ id: 'a', coinId: 'btc', type: 'above', value: 5, currency: 'usd', lastTriggered: 5 }], alertLog: [{ at: 1 }] });
+  const file = JSON.stringify(Core.buildExport(data, { market: { currency: 'pln' } }, new Date('2026-11-14T10:00:00Z')));
+  const imp = Core.parseImport(file);
+  assert.deepStrictEqual(imp.data.holdings, { btc: 2, eth: 1 });
+  assert.strictEqual(imp.data.lots.btc.length, 1);
+  assert.strictEqual(imp.currency, 'pln');
+  assert.deepStrictEqual(imp.counts, { holdings: 2, lots: 1, watch: 2, alerts: 1 });
+  assert.ok(imp.data.watch.some((w) => w.id === 'eth'), 'posiadana moneta trafia do obserwowanych');
+  assert.ok(/^cointracko-portfel-\d{4}-\d{2}-\d{2}\.json$/.test(Core.exportFileName()));
+  assert.throws(() => Core.parseImport('{"foo":1}'), /CoinTracko/);
+  assert.throws(() => Core.parseImport('nie json'), /JSON/);
+  assert.throws(() => Core.parseImport(JSON.stringify({ app: 'CoinTracko', format: 99 })), /nowszej/);
+});
+test('mergeImport: zastąp i połącz', () => {
+  const cur = Core.sanitizeData({ watch: [{ id: 'sol' }], holdings: { sol: 5, btc: 1 }, lots: { btc: [{ id: 'old', type: 'buy', amount: 1, price: 1 }] }, alerts: [], alertLog: [{ at: 1, title: 't' }] });
+  const inc = Core.parseImport(JSON.stringify(Core.buildExport(Core.sanitizeData({ watch: [{ id: 'btc' }], holdings: { btc: 3 }, lots: { btc: [{ id: 'new', type: 'buy', amount: 3, price: 2 }] } }), {}))).data;
+  const rep = Core.mergeImport(cur, inc, 'replace');
+  assert.deepStrictEqual(rep.holdings, { btc: 3 }); assert.strictEqual(rep.alertLog.length, 1);
+  const mer = Core.mergeImport(cur, inc, 'merge');
+  assert.strictEqual(mer.lots.btc.length, 2);
+  near(mer.holdings.btc, 4, 'ilość nie mniejsza niż suma partii'); near(mer.holdings.sol, 5);
+  assert.strictEqual(mer.watch.length, 2);
+  assert.strictEqual(Core.mergeImport(mer, inc, 'merge').lots.btc.length, 2, 'ponowny import nie dubluje partii');
 });
 
 console.log('Wykres');

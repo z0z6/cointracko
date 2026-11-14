@@ -42,6 +42,15 @@ window.installMarketMock = function installMarketMock() {
       const q = params.query.toLowerCase();
       return { coins: COINS.map((c, i) => ({ id: c[0], symbol: c[1], name: c[2], large: svg(c[1], i), market_cap_rank: i + 1 })).filter((c) => c.name.toLowerCase().includes(q) || c.symbol.includes(q)) };
     }
+    if (path === '/simple/price') return { bitcoin: { usd: COINS[0][3], pln: COINS[0][3] * RATE.pln, eur: COINS[0][3] * RATE.eur } };
+    const hm = path.match(/^\/coins\/(.+)\/history$/);
+    if (hm) {
+      const c = COINS.find((x) => x[0] === decodeURIComponent(hm[1])) || COINS[0];
+      const [d, mo, y] = params.date.split('-').map(Number);
+      const age = Math.max(0, (Date.now() - new Date(y, mo - 1, d).getTime()) / 86400000);
+      const price = c[3] * (1 - Math.min(0.6, age / 600)) * (0.9 + seed(c[0] + params.date)() * 0.2);
+      return { market_data: { current_price: { usd: price, pln: price * RATE.pln, eur: price * RATE.eur } } };
+    }
     const m = path.match(/^\/coins\/(.+)\/market_chart$/);
     if (m) {
       const c = COINS.find((x) => x[0] === decodeURIComponent(m[1])) || COINS[0];

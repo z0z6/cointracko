@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('api', {
   claudeCancel: () => call('claude:cancel'),
   claudeLogout: () => call('claude:logout'),
   browseClaude: () => call('ai:browseClaude'),
+  saveFile: (name, text) => call('file:save', name, text),
   openExternal: (u) => call('shell:openExternal', u),
   openDataDir: () => call('shell:openDataDir'),
   on: (channel, fn) => {

@@ -28,7 +28,8 @@
 
   const DEFAULT_DATA = {
     watch: [], // [{ id, symbol, name, image }]
-    holdings: {}, // { id: ilość }
+    holdings: {}, // { id: ilość } – łączna ilość (partie + ilość bez daty zakupu)
+    lots: {}, // { id: [{ id, type: 'buy'|'sell', date: 'RRRR-MM-DD', amount, price, currency }] } – partie zakupu/sprzedaży
     alerts: [], // [{ id, coinId, type, value, currency, repeat, active, armed, lastTriggered }]
     alertLog: [], // [{ at, coinId, title, body }]
     hints: {}
@@ -68,9 +69,21 @@
     }
     const alerts = (Array.isArray(d.alerts) ? d.alerts : []).filter((a) => a && a.coinId && ALERT_TYPES[a.type] && isFinite(Number(a.value)))
       .map((a) => ({ ...a, value: Number(a.value), active: a.active !== false, repeat: !!a.repeat }));
+    const lots = {};
+    for (const [id, list] of Object.entries(d.lots && typeof d.lots === 'object' ? d.lots : {})) {
+      const clean = (Array.isArray(list) ? list : []).map(sanitizeLot).filter(Boolean);
+      if (clean.length) lots[id] = sortLots(clean);
+    }
+    // łączna ilość nigdy nie jest mniejsza niż wynika z partii
+    for (const id of Object.keys(lots)) {
+      const net = lotsNet(lots[id]);
+      if (net > (holdings[id] || 0)) holdings[id] = net;
+      if (!(holdings[id] > 0)) delete holdings[id];
+    }
     return {
       watch: uniq,
       holdings,
+      lots,
       alerts,
       alertLog: (Array.isArray(d.alertLog) ? d.alertLog : []).slice(0, 100),
       hints: d.hints && typeof d.hints === 'object' ? d.hints : {}
@@ -180,6 +193,291 @@
       out[r.id] = mode === 'add' ? (out[r.id] || 0) + r.amount : r.amount;
     }
     return out;
+  }
+
+  // ───────────────────────── partie zakupu ─────────────────────────
+
+  const EPS = 1e-12;
+  const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v));
+
+  function sanitizeLot(l) {
+    if (!l || typeof l !== 'object') return null;
+    const amount = Number(l.amount);
+    if (!isFinite(amount) || amount <= 0) return null;
+    const price = l.price == null || l.price === '' ? null : Number(l.price);
+    return {
+      id: String(l.id || Math.random().toString(36).slice(2, 10)),
+      type: l.type === 'sell' ? 'sell' : 'buy',
+      date: isDate(l.date) ? l.date : '',
+      amount,
+      price: price != null && isFinite(price) && price >= 0 ? price : null,
+      currency: CURRENCIES[l.currency] ? l.currency : 'usd'
+    };
+  }
+
+  // chronologicznie; partie bez daty na początku (traktowane jak najstarsze)
+  function sortLots(list) {
+    return [...list].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  }
+
+  // ilość wynikająca z partii: kupno − sprzedaż
+  function lotsNet(list) {
+    let n = 0;
+    for (const l of list || []) n += l.type === 'sell' ? -l.amount : l.amount;
+    return n > EPS ? n : 0;
+  }
+
+  // przelicza kwotę między walutami wg bieżących kursów (rates: { usd: 1, pln: 4.05, eur: 0.93 })
+  function convert(value, from, to, rates) {
+    if (value == null || from === to) return value;
+    const a = rates && rates[from];
+    const b = rates && rates[to];
+    return a > 0 && b > 0 ? (value / a) * b : null;
+  }
+
+  // Wynik pozycji metodą średniej ceny zakupu.
+  // total – łączna posiadana ilość (może zawierać część bez daty i ceny zakupu), price – bieżąca cena w walucie cur.
+  function positionStats(list, total, price, cur, rates) {
+    let qty = 0; // ilość z partii
+    let knownQty = 0; // ilość, dla której znamy koszt
+    let cost = 0; // koszt tej ilości
+    let realized = 0;
+    let bought = 0;
+    let sold = 0;
+    let first = '';
+    for (const l of sortLots(list || [])) {
+      const p = l.price == null ? null : convert(l.price, l.currency, cur, rates);
+      if (l.date && (!first || l.date < first)) first = l.date;
+      if (l.type !== 'sell') {
+        qty += l.amount;
+        bought += l.amount;
+        if (p != null) { knownQty += l.amount; cost += l.amount * p; }
+        continue;
+      }
+      sold += l.amount;
+      const take = Math.min(l.amount, qty);
+      if (take <= EPS) continue;
+      const share = take / qty;
+      const soldKnown = knownQty * share;
+      const soldCost = cost * share;
+      if (p != null && soldKnown > EPS) realized += soldKnown * p - soldCost;
+      knownQty -= soldKnown;
+      cost -= soldCost;
+      qty -= take;
+    }
+    if (qty < EPS) { qty = 0; knownQty = 0; cost = 0; }
+    const totalQty = Math.max(Number(total) || 0, qty);
+    const hasPrice = price != null && isFinite(price);
+    const value = hasPrice ? totalQty * price : null;
+    const knownValue = hasPrice ? knownQty * price : null;
+    const pnl = knownQty > EPS && knownValue != null ? knownValue - cost : null;
+    return {
+      total: totalQty,
+      lotQty: qty,
+      untracked: Math.max(0, totalQty - qty),
+      knownQty,
+      cost: knownQty > EPS ? cost : 0,
+      avgPrice: knownQty > EPS ? cost / knownQty : null,
+      value,
+      pnl,
+      pnlPct: pnl != null && cost > 0 ? (pnl / cost) * 100 : null,
+      realized,
+      bought,
+      sold,
+      firstDate: first,
+      count: (list || []).length
+    };
+  }
+
+  // Wynik pojedynczej partii kupna przy bieżącej cenie.
+  function lotResult(l, price, cur, rates) {
+    const p = l.price == null ? null : convert(l.price, l.currency, cur, rates);
+    const cost = p != null ? p * l.amount : null;
+    const value = price != null && isFinite(price) ? price * l.amount : null;
+    if (l.type === 'sell') return { unitPrice: p, cost: null, value: cost, pnl: null, pnlPct: null };
+    const pnl = cost != null && value != null ? value - cost : null;
+    return { unitPrice: p, cost, value, pnl, pnlPct: pnl != null && cost > 0 ? (pnl / cost) * 100 : null };
+  }
+
+  // Zmienia partie monety i przelicza łączną ilość (część „bez daty zakupu” pozostaje bez zmian).
+  function applyLots(data, id, newLots) {
+    const old = (data.lots || {})[id] || [];
+    const untracked = Math.max(0, (data.holdings[id] || 0) - lotsNet(old));
+    const clean = sortLots((newLots || []).map(sanitizeLot).filter(Boolean));
+    const lots = { ...(data.lots || {}) };
+    if (clean.length) lots[id] = clean; else delete lots[id];
+    const holdings = { ...data.holdings };
+    const total = untracked + lotsNet(clean);
+    if (total > EPS) holdings[id] = total; else delete holdings[id];
+    return { ...data, lots, holdings };
+  }
+
+  // Ustawia łączną ilość monety (ręcznie lub ze zrzutu); nie może spaść poniżej ilości wynikającej z partii.
+  function setTotal(data, id, amount) {
+    const net = lotsNet((data.lots || {})[id]);
+    const holdings = { ...data.holdings };
+    const total = Math.max(Number(amount) || 0, net);
+    if (total > EPS) holdings[id] = total; else delete holdings[id];
+    return { ...data, holdings };
+  }
+
+  // ───────────────────────── statystyki ─────────────────────────
+
+  const STABLES = new Set(['usdt', 'usdc', 'dai', 'busd', 'tusd', 'fdusd', 'usde', 'usds', 'pyusd', 'usdd', 'eurc', 'eurs', 'gusd', 'frax', 'usdp', 'usd1']);
+
+  // Zbiorcze statystyki portfela. market: { id: notowanie }, coins: (id) → { symbol, name }
+  function portfolioStats(data, market, cur, rates, coinOf) {
+    const p = portfolio(data.holdings, market);
+    const rows = [];
+    let cost = 0; let knownValue = 0; let pnl = 0; let realized = 0; let lotsCount = 0; let first = '';
+    let prev1h = 0; let prev7d = 0; let have1h = 0; let have7d = 0; let stable = 0; let hhi = 0;
+    const ids = new Set([...Object.keys(data.holdings), ...Object.keys(data.lots || {})]);
+    for (const id of ids) {
+      const m = (market || {})[id] || {};
+      const st = positionStats((data.lots || {})[id], data.holdings[id] || 0, m.price, cur, rates);
+      const item = p.items.find((i) => i.id === id);
+      const share = item ? item.share : 0;
+      const c = coinOf ? coinOf(id) : { symbol: id, name: id };
+      realized += st.realized;
+      lotsCount += st.count;
+      if (st.firstDate && (!first || st.firstDate < first)) first = st.firstDate;
+      if (!(st.total > 0)) { if (st.count) rows.push({ id, coin: c, closed: true, ...st, share: 0 }); continue; }
+      if (st.pnl != null) { cost += st.cost; knownValue += st.knownQty * m.price; pnl += st.pnl; }
+      if (st.value != null) {
+        if (isFinite(m.change1h)) { prev1h += st.value / (1 + m.change1h / 100); have1h += st.value; }
+        if (isFinite(m.change7d)) { prev7d += st.value / (1 + m.change7d / 100); have7d += st.value; }
+        if (STABLES.has(String(c.symbol || '').toLowerCase())) stable += share;
+        hhi += share * share;
+      }
+      rows.push({ id, coin: c, closed: false, ...st, share, price: m.price, change24h: m.change24h, change7d: m.change7d, athChange: m.athChange });
+    }
+    rows.sort((a, b) => (b.value || 0) - (a.value || 0));
+    const open = rows.filter((r) => !r.closed && r.value != null);
+    const by = (key, dir) => { const l = open.filter((r) => r[key] != null && isFinite(r[key])); return l.length ? l.reduce((a, b) => (dir * (b[key] - a[key]) > 0 ? b : a)) : null; };
+    return {
+      total: p.total,
+      change24hValue: p.change24hValue,
+      change24hPct: p.change24hPct,
+      change1hPct: prev1h > 0 ? (have1h / prev1h - 1) * 100 : null,
+      change7dPct: prev7d > 0 ? (have7d / prev7d - 1) * 100 : null,
+      change7dValue: prev7d > 0 ? have7d - prev7d : null,
+      cost,
+      pnl: cost > 0 ? pnl : null,
+      pnlPct: cost > 0 ? (pnl / cost) * 100 : null,
+      costCoverage: p.total > 0 ? knownValue / p.total : 0, // jaka część portfela ma znaną cenę zakupu
+      realized,
+      lotsCount,
+      firstDate: first,
+      assets: open.length,
+      largest: open[0] || null,
+      stableShare: stable,
+      effectiveAssets: hhi > 0 ? 1 / hhi : 0, // „efektywna liczba aktywów” (odwrotność indeksu koncentracji)
+      best24h: by('change24h', 1), worst24h: by('change24h', -1),
+      best7d: by('change7d', 1), worst7d: by('change7d', -1),
+      bestPnl: by('pnlPct', 1), worstPnl: by('pnlPct', -1),
+      rows
+    };
+  }
+
+  // Segmenty wykresu kołowego: największe pozycje + „Inne”.
+  function allocation(items, labelOf, max = 6) {
+    const priced = (items || []).filter((i) => i.value != null && i.value > 0);
+    const top = priced.slice(0, max).map((i) => ({ id: i.id, label: labelOf(i.id), value: i.value, share: i.share }));
+    const rest = priced.slice(max);
+    if (rest.length) top.push({ id: null, label: 'Inne', value: rest.reduce((s, i) => s + i.value, 0), share: rest.reduce((s, i) => s + i.share, 0) });
+    return top;
+  }
+
+  // Wartość portfela w czasie przy obecnych ilościach. series: [{ amount, points: [[t, cena]] }]
+  function combineHistory(series, n = 120) {
+    const usable = (series || []).filter((s) => s.amount > 0 && s.points && s.points.length > 1);
+    if (!usable.length) return [];
+    const start = Math.max(...usable.map((s) => s.points[0][0]));
+    const end = Math.min(...usable.map((s) => s.points[s.points.length - 1][0]));
+    if (!(end > start)) return [];
+    const out = [];
+    const idx = usable.map(() => 0);
+    for (let k = 0; k < n; k++) {
+      const t = start + ((end - start) * k) / (n - 1);
+      let v = 0;
+      usable.forEach((s, j) => {
+        const pts = s.points;
+        while (idx[j] < pts.length - 2 && pts[idx[j] + 1][0] <= t) idx[j]++;
+        const a = pts[idx[j]]; const b = pts[idx[j] + 1];
+        const f = b[0] === a[0] ? 0 : Math.min(1, Math.max(0, (t - a[0]) / (b[0] - a[0])));
+        v += s.amount * (a[1] + (b[1] - a[1]) * f);
+      });
+      out.push([t, v]);
+    }
+    return out;
+  }
+
+  // Zmiana, skrajne wartości i największe obsunięcie (spadek od szczytu) w serii [[t, wartość]].
+  function seriesStats(points) {
+    if (!points || points.length < 2) return null;
+    let min = points[0]; let max = points[0]; let peak = points[0][1]; let dd = 0;
+    for (const p of points) {
+      if (p[1] < min[1]) min = p;
+      if (p[1] > max[1]) max = p;
+      if (p[1] > peak) peak = p[1];
+      if (peak > 0) dd = Math.min(dd, (p[1] / peak - 1) * 100);
+    }
+    const first = points[0][1]; const last = points[points.length - 1][1];
+    return { changePct: first > 0 ? (last / first - 1) * 100 : null, changeValue: last - first, min, max, maxDrawdownPct: dd };
+  }
+
+  // ───────────────────────── eksport / import pliku ─────────────────────────
+
+  const FILE_FORMAT = 1;
+
+  function buildExport(data, settings, now = new Date()) {
+    return {
+      app: 'CoinTracko',
+      format: FILE_FORMAT,
+      exportedAt: now.toISOString(),
+      currency: settings && settings.market ? settings.market.currency : 'usd',
+      watch: data.watch,
+      holdings: data.holdings,
+      lots: data.lots || {},
+      alerts: (data.alerts || []).map((a) => ({ id: a.id, coinId: a.coinId, type: a.type, value: a.value, currency: a.currency, repeat: !!a.repeat, active: a.active !== false }))
+    };
+  }
+
+  function exportFileName(now = new Date()) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `cointracko-portfel-${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}.json`;
+  }
+
+  // Czyta plik eksportu; rzuca zrozumiały błąd, gdy to nie jest plik CoinTracko.
+  function parseImport(text) {
+    let raw;
+    try { raw = JSON.parse(String(text || '').replace(/^﻿/, '')); } catch (_) { throw new Error('To nie jest plik CoinTracko (nie udało się go odczytać jako JSON).'); }
+    if (!raw || typeof raw !== 'object' || raw.app !== 'CoinTracko') throw new Error('To nie jest plik wyeksportowany z CoinTracko.');
+    if (Number(raw.format) > FILE_FORMAT) throw new Error('Ten plik pochodzi z nowszej wersji CoinTracko – zaktualizuj aplikację.');
+    const data = sanitizeData({ watch: raw.watch, holdings: raw.holdings, lots: raw.lots, alerts: raw.alerts });
+    // każda posiadana moneta musi być na liście obserwowanych
+    for (const id of Object.keys(data.holdings)) if (!data.watch.some((w) => w.id === id)) data.watch.push({ id, symbol: '', name: id, image: '' });
+    return {
+      data,
+      exportedAt: typeof raw.exportedAt === 'string' ? raw.exportedAt : '',
+      currency: CURRENCIES[raw.currency] ? raw.currency : null,
+      counts: { holdings: Object.keys(data.holdings).length, lots: Object.values(data.lots).reduce((n, l) => n + l.length, 0), watch: data.watch.length, alerts: data.alerts.length }
+    };
+  }
+
+  // mode 'replace' – dane z pliku zastępują portfel; 'merge' – są dołączane (ilości z pliku wygrywają dla tych samych monet)
+  function mergeImport(current, incoming, mode) {
+    if (mode === 'replace') return { ...current, watch: incoming.watch, holdings: incoming.holdings, lots: incoming.lots, alerts: incoming.alerts.map((a) => ({ ...a, armed: true })) };
+    const watch = [...current.watch];
+    for (const w of incoming.watch) if (!watch.some((x) => x.id === w.id)) watch.push(w);
+    const lots = { ...(current.lots || {}) };
+    for (const [id, list] of Object.entries(incoming.lots)) {
+      const have = new Set((lots[id] || []).map((l) => l.id));
+      lots[id] = sortLots([...(lots[id] || []), ...list.filter((l) => !have.has(l.id))]);
+    }
+    const alerts = [...current.alerts];
+    for (const a of incoming.alerts) if (!alerts.some((x) => x.id === a.id)) alerts.push({ ...a, armed: true });
+    return sanitizeData({ ...current, watch, holdings: { ...current.holdings, ...incoming.holdings }, lots, alerts });
   }
 
   // ───────────────────────── alerty ─────────────────────────
@@ -456,6 +754,9 @@ Zwróć WYŁĄCZNIE obiekt JSON w bloku \`\`\`json o strukturze:
     deepMerge, sanitizeData,
     fmtMoney, fmtAmount, fmtPct, parseAmount,
     portfolio, mergeHoldings,
+    sanitizeLot, sortLots, lotsNet, convert, positionStats, lotResult, applyLots, setTotal,
+    portfolioStats, allocation, combineHistory, seriesStats,
+    buildExport, exportFileName, parseImport, mergeImport,
     alertCondition, evaluateAlerts, alertSummary, alertMessage,
     normalizeAiRows, parseOcrText, matchRows, pickCoin, extractJson, lineNumbers,
     downsample, niceTicks

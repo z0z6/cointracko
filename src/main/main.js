@@ -222,6 +222,13 @@ function registerIpc() {
     return r.filePaths[0];
   });
 
+  handle('file:save', async (name, text) => {
+    const safe = String(name || 'cointracko.json').replace(/[\\/:*?"<>|]/g, '-');
+    const r = await dialog.showSaveDialog(win, { title: 'Zapisz plik portfela', defaultPath: path.join(app.getPath('documents'), safe), filters: [{ name: 'Plik CoinTracko (JSON)', extensions: ['json'] }] });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, String(text), 'utf8');
+    return r.filePath;
+  });
   handle('shell:openExternal', (url) => { if (/^https:\/\//.test(url)) shell.openExternal(url); return true; });
   handle('shell:openDataDir', () => shell.openPath(dataDir));
 }

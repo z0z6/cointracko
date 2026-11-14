@@ -22,6 +22,7 @@
       windowControl: (act) => a.windowControl(act),
       openExternal: (url) => a.openExternal(url),
       openDataDir: () => a.openDataDir(),
+      saveFile: (name, text) => a.saveFile(name, text),
       setApiKey: (k) => a.setApiKey(k),
       testAi: () => a.testAi(),
       extractHoldings: (image) => a.extractHoldings(image),
@@ -110,6 +111,25 @@
     windowControl: async () => false,
     openExternal: async (url) => { if (/^https:\/\//.test(url)) window.open(url, '_blank'); return true; },
     openDataDir: async () => true,
+    // Android: plik trafia do pamięci podręcznej aplikacji i otwiera się systemowe „Udostępnij”
+    // (zapis w Plikach, na Dysku, wysyłka na inne urządzenie). Przeglądarka: zwykłe pobranie pliku.
+    saveFile: async (name, text) => {
+      const FS = plugin('Filesystem');
+      const Share = plugin('Share');
+      if (isNative && FS && Share) {
+        const res = await FS.writeFile({ path: name, data: text, directory: 'CACHE', encoding: 'utf8' });
+        try { await Share.share({ title: 'Portfel CoinTracko', files: [res.uri], dialogTitle: 'Zapisz lub wyślij plik portfela' }); } catch (e) {
+          if (/cancel/i.test(String(e && e.message))) return null;
+          throw new Error('Nie udało się udostępnić pliku: ' + (e && e.message ? e.message : e));
+        }
+        return name;
+      }
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return name;
+    },
     setApiKey: async (k) => { const v = String(k || '').trim(); if (v) localStorage.setItem(KEY_API, v); else localStorage.removeItem(KEY_API); return !!v; },
     testAi: async () => { const t = await claudeRequest({ system: 'Jesteś testem połączenia.', prompt: 'Odpowiedz dokładnie tekstem: {"ok":true}', maxTokens: 50 }); return 'Połączenie działa: ' + t.trim().slice(0, 40); },
     extractHoldings: async (image) => Core.normalizeAiRows(Core.extractJson(await claudeRequest({ system: Core.HOLDINGS_SYSTEM, prompt: Core.HOLDINGS_PROMPT, image }))),
