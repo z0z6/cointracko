@@ -75,7 +75,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - run: npm ci
       - name: Przygotuj pliki aplikacji (www/) i zsynchronizuj projekt Android
         run: npm run android:sync
