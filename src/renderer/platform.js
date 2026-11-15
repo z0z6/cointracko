@@ -1,6 +1,7 @@
 'use strict';
 // Warstwa platformy: ten sam interfejs działa w Electronie (Linux – przez preload/IPC)
-// i w aplikacji na Androida (Capacitor – dane w pamięci WebView, powiadomienia lokalne).
+// w aplikacji na Androida (Capacitor – dane w pamięci WebView, powiadomienia lokalne)
+// oraz w przeglądarce otwartej na stronie serwowanej przez aplikację desktopową (dane i notowania przez lokalne API).
 
 (function () {
   const isElectron = !!window.api;
@@ -23,18 +24,67 @@
       openExternal: (url) => a.openExternal(url),
       openDataDir: () => a.openDataDir(),
       saveFile: (name, text) => a.saveFile(name, text),
-      setApiKey: (k) => a.setApiKey(k),
-      testAi: () => a.testAi(),
-      extractHoldings: (image) => a.extractHoldings(image),
-      claude: { status: a.claudeStatus, install: a.claudeInstall, login: a.claudeLogin, code: a.claudeCode, cancel: a.claudeCancel, logout: a.claudeLogout, browse: a.browseClaude },
+      browserStatus: () => a.browserStatus(),
+      browserOpen: () => a.browserOpen(),
       on: (ch, fn) => a.on(ch, fn)
     };
     return;
   }
 
-  // ───────────── Android / przeglądarka ─────────────
+  // ───────────── przeglądarka otwarta z aplikacji desktopowej (podgląd) ─────────────
+  if (!isNative && document.querySelector('meta[name="cointracko-host"]')) {
+    const lst = {};
+    const fire = (ch, payload) => (lst[ch] || []).forEach((fn) => { try { fn(payload); } catch (_) { /* ignore */ } });
+    let rev = 0;
+    const call = async (path, body) => {
+      let res;
+      try {
+        res = await fetch(path, body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'content-type': 'application/json', 'x-cointracko': '1' }, body: JSON.stringify(body) });
+      } catch (_) { throw new Error('Aplikacja CoinTracko na komputerze nie odpowiada – sprawdź, czy jest uruchomiona.'); }
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json || json.ok === false) throw new Error((json && json.error) || `Błąd serwera ${res.status}`);
+      return json;
+    };
+    // zmiany zrobione w oknie aplikacji (lub w innej karcie) trafiają tu po chwili
+    setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        const r = await call('/api/rev');
+        if (r.rev === rev) return;
+        const st = await call('/api/state');
+        rev = st.rev;
+        fire('state:external', { settings: st.settings, data: st.data });
+      } catch (_) { /* aplikacja chwilowo niedostępna */ }
+    }, 4000);
+    window.platform = {
+      kind: 'browser',
+      desktop: false,
+      hosted: true,
+      info: async () => ({ version: document.documentElement.dataset.version || '', platform: 'web', dataDir: '', hasTray: false, mock: /[?&]mock=1/.test(location.search) }),
+      load: async () => { const st = await call('/api/state'); rev = st.rev; return { settings: st.settings, data: st.data }; },
+      saveSettings: async (patch) => { const r = await call('/api/settings', patch); return r.settings; },
+      saveData: async (data) => { const r = await call('/api/data', data); rev = r.rev; return true; },
+      getJson: async (url, key) => { const r = await call(`/api/json?url=${encodeURIComponent(url)}&key=${encodeURIComponent(key || '')}`); return { status: r.status, data: r.data }; },
+      notify: async () => false, // alerty i powiadomienia obsługuje okno aplikacji
+      setTrayInfo: async () => true,
+      windowControl: async () => false,
+      openExternal: async (url) => { if (/^https:\/\//.test(url)) window.open(url, '_blank', 'noopener'); return true; },
+      openDataDir: async () => true,
+      saveFile: async (name, text) => {
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        return name;
+      },
+      on: (ch, fn) => { (lst[ch] = lst[ch] || []).push(fn); return () => { lst[ch] = lst[ch].filter((f) => f !== fn); }; }
+    };
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) fire('app:shown'); });
+    return;
+  }
+
+  // ───────────── Android / przeglądarka (samodzielnie) ─────────────
   const KEY = 'cointracko-state-v1';
-  const KEY_API = 'cointracko-api-key';
   const listeners = {};
   const emit = (ch, payload) => (listeners[ch] || []).forEach((fn) => { try { fn(payload); } catch (_) { /* ignore */ } });
 
@@ -42,34 +92,10 @@
     let raw = {};
     try { raw = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (_) { raw = {}; }
     const settings = Core.deepMerge(Core.DEFAULT_SETTINGS, raw.settings || {});
-    settings.ai.provider = 'api'; // konto Claude (Claude Code) jest dostępne tylko na komputerze
+    delete settings.ai; delete settings.import; // dawne ustawienia importu ze zrzutu i Claude
     return { settings, data: Core.sanitizeData(raw.data) };
   }
   function write(state) { localStorage.setItem(KEY, JSON.stringify({ version: 1, settings: state.settings, data: state.data })); }
-  const apiKey = () => { try { return localStorage.getItem(KEY_API) || ''; } catch (_) { return ''; } };
-
-  async function claudeRequest({ system, prompt, image, maxTokens = 4000 }) {
-    const key = apiKey();
-    if (!key) throw new Error('Brak klucza API Claude. Wklej go w Ustawieniach → Claude albo użyj odczytu lokalnego (OCR).');
-    const content = [];
-    if (image) content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType || 'image/jpeg', data: image.data } });
-    content.push({ type: 'text', text: prompt });
-    let res;
-    try {
-      res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({ model: read().settings.ai.apiModel || 'claude-sonnet-5-5', max_tokens: maxTokens, system, messages: [{ role: 'user', content }] })
-      });
-    } catch (_) { throw new Error('Brak połączenia z serwerem Claude.'); }
-    const json = await res.json().catch(() => null);
-    if (!res.ok) {
-      const msg = json && json.error && json.error.message ? json.error.message : `błąd ${res.status}`;
-      if (res.status === 401) throw new Error('Klucz API Claude jest nieprawidłowy.');
-      throw new Error('Claude: ' + String(msg).slice(0, 300));
-    }
-    return (json.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
-  }
 
   let notifyId = Math.floor(Date.now() / 1000) % 100000;
   async function notify(title, body) {
@@ -102,7 +128,7 @@
       hasTray: false,
       mock: /[?&]mock=1/.test(location.search)
     }),
-    load: async () => ({ ...read(), hasApiKey: !!apiKey(), claudePath: null }),
+    load: async () => read(),
     saveSettings: async (patch) => { const s = read(); s.settings = Core.deepMerge(s.settings, patch); write(s); return s.settings; },
     saveData: async (data) => { const s = read(); s.data = Core.sanitizeData(data); write(s); return true; },
     notify,
@@ -130,10 +156,6 @@
       setTimeout(() => URL.revokeObjectURL(url), 5000);
       return name;
     },
-    setApiKey: async (k) => { const v = String(k || '').trim(); if (v) localStorage.setItem(KEY_API, v); else localStorage.removeItem(KEY_API); return !!v; },
-    testAi: async () => { const t = await claudeRequest({ system: 'Jesteś testem połączenia.', prompt: 'Odpowiedz dokładnie tekstem: {"ok":true}', maxTokens: 50 }); return 'Połączenie działa: ' + t.trim().slice(0, 40); },
-    extractHoldings: async (image) => Core.normalizeAiRows(Core.extractJson(await claudeRequest({ system: Core.HOLDINGS_SYSTEM, prompt: Core.HOLDINGS_PROMPT, image }))),
-    claude: null,
     on: (ch, fn) => { (listeners[ch] = listeners[ch] || []).push(fn); return () => { listeners[ch] = listeners[ch].filter((f) => f !== fn); }; }
   };
 

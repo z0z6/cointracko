@@ -25,9 +25,10 @@
     const offline = (e) => new MarketError(e && e.name === 'AbortError' ? 'Serwer notowań nie odpowiada (przekroczono czas oczekiwania).' : 'Brak połączenia z internetem lub serwerem notowań.', 'network');
     let status;
     let body;
-    if (window.api && window.api.getJson) {
-      // komputer: zapytanie wykonuje proces główny aplikacji (bez ograniczeń CORS przeglądarki)
-      try { const r = await window.api.getJson(url, apiKey); status = r.status; body = r.data; } catch (e) { throw offline(e); }
+    const bridge = window.api && window.api.getJson ? window.api.getJson : window.platform && window.platform.getJson;
+    if (bridge) {
+      // komputer (i przeglądarka otwarta z aplikacji): zapytanie wykonuje proces główny aplikacji (bez ograniczeń CORS)
+      try { const r = await bridge(url, apiKey); status = r.status; body = r.data; } catch (e) { throw offline(e); }
     } else {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);

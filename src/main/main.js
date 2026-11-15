@@ -1,12 +1,10 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification, Tray, Menu, nativeImage, nativeTheme, safeStorage, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, Tray, Menu, nativeImage, nativeTheme, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 const { Store } = require('./store');
-const { ClaudeAccount } = require('./claude-account');
-const { ClaudeCodeProvider, ApiProvider, findClaude } = require('./ai/providers');
-const Core = require('../renderer/core');
+const { BrowserServer } = require('./web-server');
 
 const APP_NAME = 'CoinTracko';
 app.setName(APP_NAME);
@@ -23,28 +21,7 @@ if (!app.requestSingleInstanceLock()) {
 let win = null;
 let tray = null;
 let quitting = false;
-let store, account;
-
-const secretsFile = () => path.join(dataDir, 'klucz.bin');
-
-function getApiKey() {
-  try {
-    const raw = fs.readFileSync(secretsFile());
-    if (raw.slice(0, 4).toString() === 'b64:') return Buffer.from(raw.slice(4).toString(), 'base64').toString('utf8');
-    return safeStorage.decryptString(raw);
-  } catch (_) { return null; }
-}
-
-function setApiKey(key) {
-  if (!key) { try { fs.unlinkSync(secretsFile()); } catch (_) { /* brak */ } return; }
-  if (safeStorage.isEncryptionAvailable()) fs.writeFileSync(secretsFile(), safeStorage.encryptString(key));
-  else fs.writeFileSync(secretsFile(), 'b64:' + Buffer.from(key, 'utf8').toString('base64'));
-}
-
-function getProvider() {
-  const s = store.settings;
-  return s.ai.provider === 'api' ? new ApiProvider(s, getApiKey) : new ClaudeCodeProvider(s);
-}
+let store, server;
 
 function emit(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -182,45 +159,21 @@ function registerIpc() {
     return win.isMaximized();
   });
 
-  handle('state:get', () => ({ settings: store.settings, data: store.data, hasApiKey: !!getApiKey(), claudePath: findClaude(store.settings.ai.claudePath) }));
+  handle('state:get', () => ({ settings: store.settings, data: store.data }));
   handle('settings:set', (patch) => {
     const s = store.updateSettings(patch);
     if (patch && patch.ui && patch.ui.theme) nativeTheme.themeSource = patch.ui.theme;
+    if (patch && patch.browser) server.apply(s.browser);
     return s;
   });
   handle('data:set', (data) => store.setData(data));
   // Notowania pobiera proces główny (okno nie potrzebuje wtedy zgody CORS serwera) – wyłącznie z API CoinGecko.
-  handle('net:getJson', async (url, key) => {
-    if (typeof url !== 'string' || !url.startsWith('https://api.coingecko.com/api/v3/')) throw new Error('Niedozwolony adres.');
-    const headers = { accept: 'application/json' };
-    if (key) headers['x-cg-demo-api-key'] = String(key);
-    const res = await net.fetch(url, { headers, signal: AbortSignal.timeout(20000) });
-    let data = null;
-    if (res.ok) data = await res.json();
-    return { status: res.status, data };
-  });
+  handle('net:getJson', (url, key) => server.getJson(url, key));
   handle('notify', (title, body) => notify(String(title || APP_NAME).slice(0, 120), String(body || '').slice(0, 300)));
   handle('tray:info', (text) => { if (tray) tray.setToolTip(String(text || APP_NAME).slice(0, 120)); return true; });
 
-  handle('apikey:set', (key) => { setApiKey((key || '').trim()); return !!getApiKey(); });
-  handle('ai:test', async () => getProvider().test());
-  handle('ai:extractHoldings', async (image) => {
-    if (!image || !image.data) throw new Error('Nie wybrano zrzutu ekranu.');
-    const res = await getProvider().run({ system: Core.HOLDINGS_SYSTEM, prompt: Core.HOLDINGS_PROMPT, images: [image], webSearch: false, maxTokens: 4000 });
-    return Core.normalizeAiRows(Core.extractJson(res.text));
-  });
-  handle('claude:status', () => account.status());
-  handle('claude:install', () => account.install());
-  handle('claude:login', () => { store.updateSettings({ ai: { provider: 'claude-code' } }); return account.startLogin(); });
-  handle('claude:code', (code) => account.submitCode(code));
-  handle('claude:cancel', () => { account.cancelLogin(); return true; });
-  handle('claude:logout', () => account.logout());
-  handle('ai:browseClaude', async () => {
-    const r = await dialog.showOpenDialog(win, { title: 'Wskaż program Claude Code', properties: ['openFile'] });
-    if (r.canceled || !r.filePaths[0]) return null;
-    store.updateSettings({ ai: { claudePath: r.filePaths[0] } });
-    return r.filePaths[0];
-  });
+  handle('browser:status', () => server.status());
+  handle('browser:open', () => { const st = server.status(); if (!st.running) throw new Error('Podgląd w przeglądarce jest wyłączony.'); shell.openExternal(st.url); return true; });
 
   handle('file:save', async (name, text) => {
     const safe = String(name || 'cointracko.json').replace(/[\\/:*?"<>|]/g, '-');
@@ -238,12 +191,27 @@ app.on('second-instance', () => showWindow());
 app.whenReady().then(() => {
   store = new Store(dataDir);
   nativeTheme.themeSource = process.env.COINTRACKO_THEME || store.settings.ui.theme || 'system';
-  account = new ClaudeAccount({ getSettings: () => store.settings, emit });
+  try { fs.unlinkSync(path.join(dataDir, 'klucz.bin')); } catch (_) { /* brak – dawny, zapisany klucz API */ }
+  server = new BrowserServer({
+    getState: () => ({ settings: store.settings, data: store.data, rev: store.rev }),
+    setData: (data) => { store.setData(data); emit('data:external', store.data); },
+    setSettings: (patch) => { const st = store.updateSettings(patch); if (patch && patch.ui && patch.ui.theme) nativeTheme.themeSource = patch.ui.theme; emit('settings:external', st); return st; },
+    fetchJson: async (url, key) => {
+      const headers = { accept: 'application/json' };
+      if (key) headers['x-cg-demo-api-key'] = String(key);
+      const res = await net.fetch(url, { headers, signal: AbortSignal.timeout(20000) });
+      return { status: res.status, data: res.ok ? await res.json() : null };
+    },
+    root: path.join(__dirname, '..', 'renderer'),
+    iconFile: iconPath(),
+    version: app.getVersion()
+  });
+  server.apply(store.settings.browser);
   createTray();
   registerIpc();
   createWindow();
   app.on('activate', showWindow);
 });
 
-app.on('before-quit', () => { quitting = true; if (account) account.cancelLogin(); });
+app.on('before-quit', () => { quitting = true; if (server) server.stop(); });
 app.on('window-all-closed', () => app.quit());

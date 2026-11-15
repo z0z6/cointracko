@@ -1,13 +1,11 @@
 'use strict';
-/* global UI, Core, Market, Charts, Ocr, platform, icon */
+/* global UI, Core, Market, Charts, platform, icon */
 const { h, iconEl, toast, sheet, toggle, segmented, select, spinner, group, row, busy } = UI;
 
 const state = {
   info: null,
   settings: null,
   data: null,
-  hasApiKey: false,
-  claudePath: null,
   view: 'dashboard',
   backTo: 'dashboard',
   coinId: null,
@@ -21,7 +19,7 @@ const state = {
   marketQuery: '',
   chartDays: 7,
   settingsTab: 'general',
-  claude: { status: null, login: null, installing: false, log: '', advanced: false },
+  browser: null, // stan podglądu w przeglądarce (tylko komputer)
   onQuotes: null
 };
 
@@ -43,8 +41,6 @@ async function init() {
   const s = await platform.load();
   state.settings = s.settings;
   state.data = s.data;
-  state.hasApiKey = s.hasApiKey;
-  state.claudePath = s.claudePath;
   Market.setKey(state.settings.market.cgKey);
   if (!state.data.hints.seeded) {
     state.data.hints.seeded = true;
@@ -64,21 +60,26 @@ async function init() {
 
   platform.on('app:refresh', () => refresh(true));
   platform.on('app:shown', () => { if (Date.now() - state.conn.lastUpdate > 20000) refresh(); });
-  platform.on('claude:log', (t) => { state.claude.log = (state.claude.log + t).slice(-4000); const el = document.querySelector('.acc-log'); if (el) el.textContent = state.claude.log.split('\n').slice(-6).join('\n'); });
-  platform.on('claude:login', (ev) => {
-    const C = state.claude;
-    if (ev.stage === 'url' || ev.stage === 'code') { C.login = { ...(C.login || {}), stage: ev.stage, url: ev.url || (C.login && C.login.url) }; if (state.view === 'settings') render(); }
-    if (ev.stage === 'done') { C.login = null; C.status = ev.status; toast('Połączono z kontem Claude', 'success'); render(); }
-    if (ev.stage === 'error') { C.login = null; errToast(new Error(ev.error)); render(); }
-  });
+  // dane lub ustawienia zmienione poza tym oknem (druga karta przeglądarki, okno aplikacji)
+  platform.on('data:external', (data) => applyExternal({ data }));
+  platform.on('settings:external', (settings) => applyExternal({ settings }));
+  platform.on('state:external', (st) => applyExternal(st));
   window.addEventListener('online', () => refresh(true));
   window.addEventListener('offline', () => { state.conn = { ...state.conn, status: 'offline', error: 'Brak połączenia z internetem.' }; renderSidebar(); });
-  document.addEventListener('paste', onPaste);
   window.onAppBack = onBack;
 
   render();
   refresh(); // po uruchomieniu od razu łączymy się z siecią i pobieramy notowania
-  if (platform.claude && state.settings.ai.provider === 'claude-code') refreshClaude();
+}
+
+function applyExternal({ data, settings }) {
+  if (settings) {
+    const curChanged = settings.market && settings.market.currency !== cur();
+    state.settings = settings;
+    if (curChanged) { state.market = {}; state.top = null; state.rates = null; Market.clearCache(); state.conn.lastUpdate = 0; refresh(true); }
+  }
+  if (data) state.data = Core.sanitizeData(data);
+  softRender();
 }
 
 function setMaxTitle(maximized) {
@@ -153,17 +154,18 @@ async function refresh(manual) {
   }
 }
 
-// Kursy walut są potrzebne tylko wtedy, gdy któraś partia ma cenę w innej walucie niż bieżąca.
+// Kursy walut są potrzebne tylko wtedy, gdy któryś wpis ma cenę w innej walucie niż bieżąca.
 function needRates() {
   return Object.values(state.data.lots).some((list) => list.some((l) => l.price != null && l.currency !== cur()));
 }
 
 const lotsOf = (id) => state.data.lots[id] || [];
-const posStats = (id) => Core.positionStats(lotsOf(id), state.data.holdings[id] || 0, (state.market[id] || {}).price, cur(), state.rates);
+const posStats = (id) => Core.positionStats(lotsOf(id), (state.market[id] || {}).price, cur(), state.rates);
 const assetsWord = (n) => `${n} ${n === 1 ? 'aktywo' : n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14) ? 'aktywa' : 'aktywów'}`;
 const signed = (v) => (v == null ? '—' : (v > 0 ? '+' : '') + money(v));
 
 function afterQuotes() {
+  if (state.onSheetQuotes) state.onSheetQuotes();
   if (state.onQuotes) { renderSidebar(); state.onQuotes(); return; }
   softRender();
 }
@@ -181,6 +183,7 @@ function updateTray() {
 }
 
 function checkAlerts() {
+  if (platform.hosted) return; // alerty sprawdza okno aplikacji – inaczej powiadomienia by się dublowały
   const res = Core.evaluateAlerts(state.data.alerts, state.market, cur());
   if (!res.changed) return;
   state.data.alerts = res.alerts;
@@ -241,20 +244,6 @@ function removeWatch(id) {
 function toggleWatch(c) {
   if (isWatched(c.id)) removeWatch(c.id); else { addWatch(c); refresh(); }
   render(true);
-}
-
-// Ustawia łączną ilość monety. Zwraca false, gdy ilość byłaby mniejsza niż suma partii zakupu.
-function setHolding(id, amount) {
-  const net = Core.lotsNet(lotsOf(id));
-  if (amount < net - 1e-12) {
-    toast(`Ilość nie może być mniejsza niż suma partii (${Core.fmtAmount(net)}). Zmień lub usuń partie.`, 'error', 6000);
-    return false;
-  }
-  state.data = Core.setTotal(state.data, id, amount);
-  if (amount > 0 && !isWatched(id)) addWatch(coinInfo(id), true);
-  saveData();
-  updateTray();
-  return true;
 }
 
 function removePosition(id) {
@@ -402,10 +391,10 @@ function viewDashboard() {
     page.append(h('div', { class: 'card onboard' },
       h('div', { class: 'ob-ic', html: icon('wallet', 30) }),
       h('h2', null, 'Dodaj swoje kryptowaluty'),
-      h('p', null, 'Wczytaj zrzut ekranu z giełdy lub portfela – aplikacja odczyta tokeny i ich ilości, doda je do obserwowanych i na bieżąco wyceni. Możesz też wpisać pozycje ręcznie.'),
+      h('p', null, 'Wybierz kryptowalutę i wpisz, ile jej masz – kolejne zakupy dopisujesz jako osobne wpisy, a aplikacja sumuje ilość i na bieżąco wycenia portfel.'),
       h('div', { class: 'acts' },
-        h('button', { class: 'btn primary lg', onclick: () => openImport() }, iconEl('camera', 16), 'Wczytaj zrzut ekranu'),
-        h('button', { class: 'btn lg', onclick: addHoldingFlow }, iconEl('plus', 16), 'Dodaj ręcznie'))));
+        h('button', { class: 'btn primary lg', onclick: addHoldingFlow }, iconEl('plus', 16), 'Dodaj pozycję'),
+        h('button', { class: 'btn lg', onclick: importFile }, iconEl('upload', 16), 'Importuj plik'))));
   }
 
   page.append(h('div', { class: 'section-head' }, h('h2', null, 'Obserwowane'), h('div', { class: 'spacer' }),
@@ -422,7 +411,6 @@ function viewDashboard() {
 
   return h('div', null,
     h('div', { class: 'toolbar' }, h('h1', null, 'Pulpit'), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn', onclick: () => openImport() }, iconEl('camera', 15), 'Wczytaj zrzut'),
       h('button', { class: 'btn primary', onclick: () => pickCoin({ title: 'Dodaj do obserwowanych', onPick: (c) => { addWatch(c); refresh(); render(true); } }) }, iconEl('plus', 15), 'Dodaj')),
     page);
 }
@@ -536,10 +524,9 @@ function viewPortfolio() {
     page.append(h('div', { class: 'card onboard' },
       h('div', { class: 'ob-ic', html: icon('wallet', 30) }),
       h('h2', null, 'Portfel jest pusty'),
-      h('p', null, 'Wczytaj zrzut ekranu z giełdy lub portfela, dodaj pozycję ręcznie albo zaimportuj plik portfela z innego urządzenia. Ilości możesz w każdej chwili poprawić – wartość przelicza się na bieżąco.'),
+      h('p', null, 'Dodaj pozycję albo zaimportuj plik portfela z innego urządzenia. Każdy zakup to osobny wpis z datą, ilością i ceną – wszystkie można poprawić, a suma i wartość przeliczają się na bieżąco.'),
       h('div', { class: 'acts' },
-        h('button', { class: 'btn primary lg', onclick: () => openImport() }, iconEl('camera', 16), 'Wczytaj zrzut ekranu'),
-        h('button', { class: 'btn lg', onclick: addHoldingFlow }, iconEl('plus', 16), 'Dodaj pozycję'),
+        h('button', { class: 'btn primary lg', onclick: addHoldingFlow }, iconEl('plus', 16), 'Dodaj pozycję'),
         h('button', { class: 'btn lg', onclick: importFile }, iconEl('upload', 16), 'Importuj plik'))));
   } else {
     page.append(h('div', { class: 'grid grid-4', style: { marginBottom: '16px' } },
@@ -548,7 +535,7 @@ function viewPortfolio() {
         h('div', { class: 'value num ' + pctClass(p.change24hValue) }, signed(p.change24hValue)), h('div', { class: 'stat-sub ' + pctClass(p.change24hPct) }, Core.fmtPct(p.change24hPct))),
       h('div', { class: 'card stat' }, h('div', { class: 'label' }, iconEl('arrowUp', 14), 'Zysk / strata od zakupu'),
         h('div', { class: 'value num ' + pctClass(ps.pnl) }, signed(ps.pnl)),
-        h('div', { class: 'stat-sub ' + pctClass(ps.pnlPct) }, ps.pnl == null ? 'dodaj partie zakupu, aby liczyć wynik' : Core.fmtPct(ps.pnlPct))),
+        h('div', { class: 'stat-sub ' + pctClass(ps.pnlPct) }, ps.pnl == null ? 'wpisz ceny zakupu we wpisach' : Core.fmtPct(ps.pnlPct))),
       h('div', { class: 'card stat' }, h('div', { class: 'label' }, iconEl('coins', 14), 'Zainwestowano'),
         h('div', { class: 'value num' }, ps.cost > 0 ? money(ps.cost) : '—'),
         h('div', { class: 'stat-sub' }, ps.cost > 0 && ps.costCoverage < 0.995 ? `dotyczy ${Core.fmtPct(ps.costCoverage * 100, 0).replace('+', '')} portfela` : assetsWord(p.items.length)))));
@@ -558,35 +545,24 @@ function viewPortfolio() {
         const c = coinInfo(i.id);
         const q = state.market[i.id] || {};
         const st = posStats(i.id);
-        const input = h('input', { class: 'input', inputmode: 'decimal', value: Core.fmtAmount(i.amount), 'aria-label': `Ilość ${c.name}`, onclick: (e) => e.stopPropagation(),
-          onfocus: (e) => e.target.select(),
-          onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { e.target.value = Core.fmtAmount(i.amount); e.target.blur(); } },
-          onchange: (e) => {
-            const n = Core.parseAmount(e.target.value);
-            if (!isFinite(n) || n < 0) { toast('Wpisz poprawną liczbę, np. 0,25', 'error'); e.target.value = Core.fmtAmount(i.amount); return; }
-            if (n === 0) { confirmRemoveHolding(i.id); return; }
-            if (!setHolding(i.id, n)) e.target.value = Core.fmtAmount(i.amount);
-            render(true);
-          } });
         return h('div', { class: 'coin-row click', onclick: () => go('coin', { id: i.id }) },
-          coinCell(c, st.count ? `${st.count} ${st.count === 1 ? 'partia' : st.count < 5 ? 'partie' : 'partii'}` : ''),
-          h('div', { class: 'c-amt' }, input),
+          coinCell(c, st.count ? `${st.count} ${st.count === 1 ? 'wpis' : st.count < 5 ? 'wpisy' : 'wpisów'}` : ''),
+          h('div', { class: 'c-amt' }, h('button', { class: 'amt-btn num', title: 'Edytuj wpisy (suma ilości)', 'aria-label': `Ilość ${c.name}: ${Core.fmtAmount(i.amount)}. Edytuj wpisy`, onclick: (e) => { e.stopPropagation(); openLots(i.id); } }, Core.fmtAmount(i.amount), iconEl('pencil', 12))),
           h('div', { class: 'c-price' }, money(q.price)),
           h('div', { class: 'c-val' }, money(i.value), h('div', { class: 'sub' }, i.value != null ? Core.fmtPct(i.share * 100, 1).replace('+', '') : 'brak notowań'),
             st.pnl != null ? h('div', { class: 'sub m-only ' + pctClass(st.pnl) }, `${signed(st.pnl)} (${Core.fmtPct(st.pnlPct, 1)})`) : null),
           h('div', { class: 'c-pnl ' + pctClass(st.pnl) }, st.pnl == null ? h('span', { class: 'muted' }, '—') : [signed(st.pnl), h('div', { class: 'sub' }, Core.fmtPct(st.pnlPct))]),
           pctEl(i.change24h),
           h('div', { class: 'c-act' },
-            h('button', { class: 'icon-btn', title: 'Partie zakupu', 'aria-label': 'Partie zakupu', onclick: (e) => { e.stopPropagation(); openLots(i.id); }, html: icon('layers', 16) }),
+            h('button', { class: 'icon-btn', title: 'Wpisy – zakupy i sprzedaże', 'aria-label': 'Wpisy – zakupy i sprzedaże', onclick: (e) => { e.stopPropagation(); openLots(i.id); }, html: icon('layers', 16) }),
             h('button', { class: 'icon-btn danger', title: 'Usuń pozycję', 'aria-label': 'Usuń pozycję', onclick: (e) => { e.stopPropagation(); confirmRemoveHolding(i.id); }, html: icon('trash', 16) })));
       })));
-    page.append(h('p', { class: 'group-footer' }, 'Pole „Ilość” to łączna liczba posiadanych tokenów. Przycisk z warstwami otwiera partie zakupu (data, ilość, cena) – na ich podstawie liczony jest zysk lub strata od zakupu.'));
+    page.append(h('p', { class: 'group-footer' }, '„Ilość” to suma wpisów danej kryptowaluty. Kliknij ją (lub ikonę z warstwami), aby dodać kolejny zakup albo poprawić datę, ilość i cenę dowolnego wpisu – zysk i strata liczą się od cen zakupu.'));
   }
   return h('div', null,
     h('div', { class: 'toolbar' }, h('h1', null, 'Portfel'), h('div', { class: 'spacer' }),
       h('button', { class: 'btn', title: 'Zapisz portfel do pliku', onclick: exportFile }, iconEl('download', 15), 'Eksport'),
       h('button', { class: 'btn', title: 'Wczytaj portfel z pliku', onclick: importFile }, iconEl('upload', 15), 'Import'),
-      h('button', { class: 'btn', onclick: () => openImport() }, iconEl('camera', 15), 'Wczytaj zrzut'),
       h('button', { class: 'btn primary', onclick: addHoldingFlow }, iconEl('plus', 15), 'Dodaj pozycję')),
     page);
 }
@@ -596,50 +572,138 @@ function confirmRemoveHolding(id) {
   const n = lotsOf(id).length;
   sheet({
     title: `Usunąć ${c.name} z portfela?`,
-    subtitle: (n ? `Usunięte zostaną także partie zakupu (${n}). ` : '') + 'Kryptowaluta pozostanie na liście obserwowanych.',
+    subtitle: (n ? `Usuniętych zostanie ${n} ${n === 1 ? 'wpis' : n < 5 ? 'wpisy' : 'wpisów'}. ` : '') + 'Kryptowaluta pozostanie na liście obserwowanych.',
     body: h('div'),
     actions: [{ label: 'Anuluj' }, { label: 'Usuń pozycję', kind: 'danger', onClick: () => { removePosition(id); render(true); } }],
     onClose: () => { if (state.view === 'portfolio') render(true); }
   });
 }
 
-// ───────────────────────── partie zakupu ─────────────────────────
+// ───────────────────────── wpisy pozycji ─────────────────────────
 const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const dateStr = (iso) => (iso ? new Date(iso + 'T12:00:00').toLocaleDateString('pl-PL', { day: 'numeric', month: 'short', year: 'numeric' }) : 'bez daty');
 
+// Okno wpisów pozycji: każdy zakup/sprzedaż to osobny wpis z datą, ilością i ceną – wszystkie pola można poprawiać
+// wprost na liście. Posiadana ilość jest zawsze sumą wpisów i przelicza się po każdej zmianie.
 function openLots(id) {
   const c = coinInfo(id);
   const sym = String(c.symbol || '').toUpperCase();
   const body = h('div');
-  const form = { editId: null, type: 'buy', date: todayIso(), amount: '', price: '', fromUntracked: true };
-  if (!state.rates && needRates()) Market.rates().then((r) => { state.rates = r; draw(); }).catch(() => {});
+  const summaryBox = h('div');
+  const listBox = h('div');
+  const form = { type: 'buy', date: todayIso(), amount: '', price: '' };
+  const results = new Map(); // id wpisu → element z wynikiem
+  const typeOpts = [{ value: 'buy', label: 'Kupno' }, { value: 'sell', label: 'Sprzedaż' }];
+  if (!state.rates && needRates()) Market.rates().then((r) => { state.rates = r; refreshDerived(); }).catch(() => {});
 
-  const commit = (lots, total) => {
+  const commit = (lots) => {
     state.data = Core.applyLots(state.data, id, lots);
-    if (total != null) state.data = Core.setTotal(state.data, id, total);
     if (state.data.holdings[id] > 0 && !isWatched(id)) addWatch(c, true);
     saveData(); updateTray();
     if (!state.market[id] || state.market[id].price == null) refresh();
-    draw();
+    softRender(); // pulpit i portfel pod oknem od razu pokazują nową sumę
+    refreshDerived();
   };
 
-  const save = () => {
+  // zmiana jednego pola wpisu; revert przywraca poprzednią wartość w polu, gdy zmiana jest niedozwolona
+  const change = (lotId, patch, revert) => {
+    const next = lotsOf(id).map((l) => (l.id === lotId ? { ...l, ...patch } : l));
+    if (Core.lotsBalance(next) < -1e-12) { toast('Sprzedaż nie może przekraczać posiadanej ilości – zmniejsz sprzedaż lub dodaj zakup.', 'error', 6000); revert(); return; }
+    commit(next);
+  };
+
+  const refreshDerived = () => {
+    const q = state.market[id] || {};
+    const st = posStats(id);
+    const cell = (k, v, cls, sub) => h('div', { class: 'kv' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (cls || '') }, v), sub ? h('div', { class: 'k ' + (cls || '') }, sub) : null);
+    summaryBox.replaceChildren(h('div', { class: 'card', style: { overflow: 'hidden', marginBottom: '14px' } }, h('div', { class: 'kv-grid' },
+      cell('Posiadana ilość (suma wpisów)', `${Core.fmtAmount(st.total)} ${sym}`, '', st.count ? `${st.count} ${st.count === 1 ? 'wpis' : st.count < 5 ? 'wpisy' : 'wpisów'}` : ''),
+      cell('Wartość', st.value != null ? money(st.value) : '—', '', isFinite(q.price) ? `cena ${money(q.price)}` : 'brak notowań'),
+      cell('Średnia cena zakupu', st.avgPrice != null ? money(st.avgPrice) : '—', '', st.cost > 0 ? `zainwestowano ${money(st.cost)}` : 'uzupełnij ceny zakupu'),
+      cell('Zysk / strata od zakupu', signed(st.pnl), pctClass(st.pnl), st.pnl != null ? Core.fmtPct(st.pnlPct) : ''),
+      st.realized ? cell('Zysk zrealizowany (sprzedaże)', signed(st.realized), pctClass(st.realized)) : null)));
+    for (const l of lotsOf(id)) {
+      const el = results.get(l.id);
+      if (!el) continue;
+      const r = Core.lotResult(l, q.price, cur(), state.rates);
+      const foreign = l.price != null && l.currency !== cur();
+      el.replaceChildren(...[
+        l.type === 'sell'
+          ? h('div', null, r.value != null ? money(r.value) : '—', h('div', { class: 'sub' }, 'przychód'))
+          : h('div', { class: pctClass(r.pnl) }, r.pnl != null ? signed(r.pnl) : '—', h('div', { class: 'sub' }, r.pnl != null ? Core.fmtPct(r.pnlPct) : l.price == null ? 'brak ceny zakupu' : 'brak notowań')),
+        foreign ? h('div', { class: 'sub' }, r.unitPrice != null ? `cena ≈ ${money(r.unitPrice)} dziś` : 'inna waluta') : null].filter(Boolean));
+    }
+  };
+
+  const entryRow = (l) => {
+    const now = () => lotsOf(id).find((x) => x.id === l.id) || l; // aktualna wersja wpisu (po wcześniejszych poprawkach)
+    const typeSel = select(typeOpts, l.type, (v) => change(l.id, { type: v }, () => { typeSel.value = now().type; }), { 'aria-label': 'Rodzaj wpisu' });
+    const date = h('input', { class: 'input', type: 'date', max: todayIso(), value: l.date || '', 'aria-label': 'Data',
+      onchange: (e) => { if (e.target.value > todayIso()) { toast('Data nie może być z przyszłości', 'error'); e.target.value = now().date || ''; return; } change(l.id, { date: e.target.value }, () => { e.target.value = now().date || ''; }); } });
+    const amount = h('input', { class: 'input', inputmode: 'decimal', value: Core.fmtAmount(l.amount), 'aria-label': `Ilość (${sym})`,
+      onfocus: (e) => e.target.select(),
+      onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); },
+      onchange: (e) => {
+        const n = Core.parseAmount(e.target.value);
+        if (!isFinite(n) || n <= 0) { toast('Wpisz ilość większą od zera, np. 0,25', 'error'); e.target.value = Core.fmtAmount(now().amount); return; }
+        change(l.id, { amount: n }, () => { e.target.value = Core.fmtAmount(now().amount); });
+        e.target.value = Core.fmtAmount(n);
+      } });
+    const price = h('input', { class: 'input', inputmode: 'decimal', placeholder: 'brak', value: l.price != null ? String(l.price).replace('.', ',') : '', 'aria-label': `Cena za 1 ${sym}`,
+      onfocus: (e) => e.target.select(),
+      onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); },
+      onchange: (e) => {
+        const raw = e.target.value.trim();
+        const n = raw === '' ? null : Core.parseAmount(raw);
+        if (n != null && (!isFinite(n) || n < 0)) { toast('Wpisz poprawną cenę albo zostaw pole puste', 'error'); e.target.value = now().price != null ? String(now().price).replace('.', ',') : ''; return; }
+        change(l.id, { price: n }, () => { e.target.value = now().price != null ? String(now().price).replace('.', ',') : ''; });
+      } });
+    const res = h('div', { class: 'e-res num' });
+    results.set(l.id, res);
+    return h('div', { class: 'entry-row' },
+      h('div', { class: 'e-type' }, typeSel),
+      h('div', { class: 'e-date' }, date),
+      h('div', { class: 'e-amt' }, amount),
+      h('div', { class: 'e-price' }, price, h('span', { class: 'e-cur' }, (l.currency || 'usd').toUpperCase())),
+      res,
+      h('div', { class: 'e-act' }, h('button', { class: 'icon-btn danger', title: 'Usuń wpis', 'aria-label': 'Usuń wpis', onclick: () => {
+        const next = lotsOf(id).filter((x) => x.id !== l.id);
+        commit(next); drawList();
+      }, html: icon('trash', 15) })));
+  };
+
+  function drawList() {
+    results.clear();
+    const lots = [...lotsOf(id)].reverse(); // najnowsze na górze
+    if (!lots.length) {
+      listBox.replaceChildren(h('div', { class: 'empty', style: { padding: '14px 0 18px' } }, 'Brak wpisów. Dodaj pierwszy poniżej – np. „10 marca kupiłem 0,05 BTC po 250 000 zł”.'));
+    } else {
+      listBox.replaceChildren(
+        h('div', { class: 'lot-list entries' },
+          h('div', { class: 'entry-head' }, h('div', { class: 'e-type' }, 'Rodzaj'), h('div', { class: 'e-date' }, 'Data'), h('div', { class: 'e-amt' }, `Ilość (${sym})`), h('div', { class: 'e-price' }, `Cena za 1 ${sym}`), h('div', { class: 'e-res' }, 'Wynik'), h('div', { class: 'e-act' })),
+          lots.map(entryRow)),
+        lots.some((l) => l.type === 'buy' && l.price == null)
+          ? h('p', { class: 'group-footer', style: { marginTop: '-6px' } }, 'Wpisy bez ceny zakupu liczą się do ilości i wartości, ale nie do zysku i straty – wpisz cenę wprost na liście, aby je uwzględnić.') : null);
+    }
+    refreshDerived();
+  }
+
+  const add = () => {
     const amount = Core.parseAmount(form.amount);
     const price = String(form.price).trim() === '' ? null : Core.parseAmount(form.price);
     if (!isFinite(amount) || amount <= 0) { toast('Wpisz ilość większą od zera', 'error'); return; }
     if (price != null && (!isFinite(price) || price < 0)) { toast('Wpisz poprawną cenę albo zostaw pole puste', 'error'); return; }
     if (form.date && form.date > todayIso()) { toast('Data nie może być z przyszłości', 'error'); return; }
-    const st = posStats(id);
-    const old = lotsOf(id);
-    if (form.type === 'sell' && !form.editId && amount > st.total + 1e-12) { toast(`Nie możesz sprzedać więcej, niż posiadasz (${Core.fmtAmount(st.total)} ${sym})`, 'error', 5000); return; }
-    const lot = { id: form.editId || uid(), type: form.type, date: form.date, amount, price, currency: cur() };
-    const lots = form.editId ? old.map((l) => (l.id === form.editId ? lot : l)) : [...old, lot];
-    let total = null;
-    if (!form.editId && form.type === 'buy' && form.fromUntracked && st.untracked > 0) total = st.total + Math.max(0, amount - st.untracked);
-    if (!form.editId && form.type === 'sell') total = Math.max(0, st.total - amount); // sprzedaż zmniejsza także ilość bez daty zakupu
-    Object.assign(form, { editId: null, amount: '', price: '' });
-    commit(lots, total);
-    toast('Zapisano partię', 'success', 1600);
+    const lot = { id: uid(), type: form.type, date: form.date, amount, price, currency: cur() };
+    const next = [...lotsOf(id), lot];
+    if (Core.lotsBalance(next) < -1e-12) { toast(`Nie możesz sprzedać więcej, niż posiadasz (${Core.fmtAmount(posStats(id).total)} ${sym})`, 'error', 5000); return; }
+    Object.assign(form, { amount: '', price: '' });
+    commit(next);
+    drawList();
+    drawForm();
+    toast('Dodano wpis – suma zaktualizowana', 'success', 1600);
+    const first = body.querySelector('.lot-add input[inputmode]');
+    if (first) first.focus();
   };
 
   const fetchPrice = async (btn, priceInput) => {
@@ -654,64 +718,31 @@ function openLots(id) {
     }, 'Pobieram…');
   };
 
-  function draw() {
-    const q = state.market[id] || {};
-    const st = posStats(id);
-    const lots = [...lotsOf(id)].reverse();
-    const cell = (k, v, cls, sub) => h('div', { class: 'kv' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (cls || '') }, v), sub ? h('div', { class: 'k ' + (cls || '') }, sub) : null);
-    const summary = h('div', { class: 'card', style: { overflow: 'hidden', marginBottom: '14px' } }, h('div', { class: 'kv-grid' },
-      cell('Posiadana ilość', `${Core.fmtAmount(st.total)} ${sym}`),
-      cell('Średnia cena zakupu', st.avgPrice != null ? money(st.avgPrice) : '—', '', isFinite(q.price) ? `teraz ${money(q.price)}` : ''),
-      cell('Zainwestowano', st.cost > 0 ? money(st.cost) : '—', '', st.value != null ? `wartość ${money(st.value)}` : ''),
-      cell('Zysk / strata od zakupu', signed(st.pnl), pctClass(st.pnl), st.pnl != null ? Core.fmtPct(st.pnlPct) : ''),
-      st.realized ? cell('Zysk zrealizowany (sprzedaże)', signed(st.realized), pctClass(st.realized)) : null));
-
-    const rows = lots.map((l) => {
-      const r = Core.lotResult(l, q.price, cur(), state.rates);
-      const foreign = l.price != null && l.currency !== cur();
-      return h('div', { class: 'lot-row' + (form.editId === l.id ? ' editing' : '') },
-        h('div', { class: 'l-date' }, dateStr(l.date), h('div', null, h('span', { class: 'chip ' + (l.type === 'sell' ? 'orange' : 'blue') }, l.type === 'sell' ? 'Sprzedaż' : 'Kupno'))),
-        h('div', { class: 'l-amt num' }, (l.type === 'sell' ? '−' : '') + Core.fmtAmount(l.amount), h('div', { class: 'sub' }, sym)),
-        h('div', { class: 'l-price num' }, l.price != null ? Core.fmtMoney(l.price, l.currency) : '—', h('div', { class: 'sub' }, l.price == null ? 'brak ceny' : foreign ? (r.unitPrice != null ? `≈ ${money(r.unitPrice)} dziś` : 'inna waluta') : 'za 1 ' + sym)),
-        h('div', { class: 'l-cost num' }, l.type === 'sell' ? (r.value != null ? money(r.value) : '—') : r.cost != null ? money(r.cost) : '—', h('div', { class: 'sub' }, l.type === 'sell' ? 'przychód' : 'koszt')),
-        h('div', { class: 'l-pnl num ' + pctClass(r.pnl) }, l.type === 'sell' ? '' : signed(r.pnl), r.pnl != null ? h('div', { class: 'sub' }, Core.fmtPct(r.pnlPct)) : null),
-        h('div', { class: 'l-act' },
-          h('button', { class: 'icon-btn', title: 'Edytuj partię', 'aria-label': 'Edytuj partię', onclick: () => { Object.assign(form, { editId: l.id, type: l.type, date: l.date || '', amount: Core.fmtAmount(l.amount), price: l.price != null ? String(l.price).replace('.', ',') : '' }); draw(); }, html: icon('pencil', 15) }),
-          h('button', { class: 'icon-btn danger', title: 'Usuń partię', 'aria-label': 'Usuń partię', onclick: () => { if (form.editId === l.id) form.editId = null; commit(lotsOf(id).filter((x) => x.id !== l.id)); }, html: icon('trash', 15) })));
-    });
-    if (st.untracked > 1e-12) {
-      rows.push(h('div', { class: 'lot-row' },
-        h('div', { class: 'l-date' }, 'bez daty zakupu', h('div', { class: 'sub' }, 'wpisane ręcznie lub ze zrzutu')),
-        h('div', { class: 'l-amt num' }, Core.fmtAmount(st.untracked), h('div', { class: 'sub' }, sym)),
-        h('div', { class: 'l-price num muted' }, '—'), h('div', { class: 'l-cost num muted' }, '—'), h('div', { class: 'l-pnl' }), h('div', { class: 'l-act' })));
-    }
-
-    const amountInput = h('input', { class: 'input', inputmode: 'decimal', placeholder: 'np. 0,25', value: form.amount, 'aria-label': 'Ilość', oninput: (e) => { form.amount = e.target.value; sum(); } });
-    const priceInput = h('input', { class: 'input', inputmode: 'decimal', placeholder: 'opcjonalnie', value: form.price, 'aria-label': 'Cena za jednostkę', oninput: (e) => { form.price = e.target.value; sum(); } });
+  const formBox = h('div', { class: 'lot-add' });
+  function drawForm() {
+    const amountInput = h('input', { class: 'input', inputmode: 'decimal', placeholder: 'np. 0,25', value: form.amount, 'aria-label': 'Ilość', oninput: (e) => { form.amount = e.target.value; sum(); }, onkeydown: (e) => { if (e.key === 'Enter') add(); } });
+    const priceInput = h('input', { class: 'input', inputmode: 'decimal', placeholder: 'opcjonalnie', value: form.price, 'aria-label': 'Cena za jednostkę', oninput: (e) => { form.price = e.target.value; sum(); }, onkeydown: (e) => { if (e.key === 'Enter') add(); } });
     const total = h('div', { class: 'row-hint' });
     const sum = () => { const a = Core.parseAmount(form.amount); const pr = Core.parseAmount(form.price); total.textContent = isFinite(a) && isFinite(pr) ? `Razem: ${money(a * pr)}` : ''; };
     const priceBtn = h('button', { class: 'btn', type: 'button', title: 'Pobierz cenę z wybranego dnia' }, iconEl('clock', 14), 'Cena z dnia');
     priceBtn.addEventListener('click', () => fetchPrice(priceBtn, priceInput));
-    const fields = h('div', { class: 'lot-form' },
-      h('div', { class: 'field' }, h('label', null, 'Rodzaj'), segmented([{ value: 'buy', label: 'Kupno' }, { value: 'sell', label: 'Sprzedaż' }], form.type, (v) => { form.type = v; draw(); })),
-      h('div', { class: 'field' }, h('label', null, 'Data'), h('input', { class: 'input', type: 'date', max: todayIso(), value: form.date, 'aria-label': 'Data', onchange: (e) => { form.date = e.target.value; } })),
-      h('div', { class: 'field' }, h('label', null, `Ilość (${sym})`), amountInput),
-      h('div', { class: 'field grow' }, h('label', null, `Cena za 1 ${sym} (${cur().toUpperCase()})`), h('div', { class: 'inline-form' }, priceInput, priceBtn), total));
+    formBox.replaceChildren(
+      h('div', { class: 'card-title', style: { marginBottom: '8px' } }, 'Nowy wpis'),
+      h('div', { class: 'lot-form' },
+        h('div', { class: 'field' }, h('label', null, 'Rodzaj'), segmented(typeOpts, form.type, (v) => { form.type = v; drawForm(); })),
+        h('div', { class: 'field' }, h('label', null, 'Data'), h('input', { class: 'input', type: 'date', max: todayIso(), value: form.date, 'aria-label': 'Data', onchange: (e) => { form.date = e.target.value; } })),
+        h('div', { class: 'field' }, h('label', null, `Ilość (${sym})`), amountInput),
+        h('div', { class: 'field grow' }, h('label', null, `Cena za 1 ${sym} (${cur().toUpperCase()})`), h('div', { class: 'inline-form' }, priceInput, priceBtn), total)),
+      h('div', { style: { display: 'flex', gap: '8px', marginTop: '6px' } }, h('button', { class: 'btn primary', onclick: add }, iconEl('plus', 14), 'Dodaj wpis')));
     sum();
-    body.replaceChildren(summary,
-      rows.length ? h('div', { class: 'lot-list' }, rows) : h('div', { class: 'empty', style: { padding: '14px 0 18px' } }, 'Brak partii. Dodaj pierwszą – np. „10 marca kupiłem 0,05 BTC po 250 000 zł”.'),
-      h('div', { class: 'lot-add' },
-        h('div', { class: 'card-title', style: { marginBottom: '8px' } }, form.editId ? 'Edycja partii' : 'Nowa partia'),
-        fields,
-        !form.editId && form.type === 'buy' && st.untracked > 1e-12 ? h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: form.fromUntracked, onchange: (e) => { form.fromUntracked = e.target.checked; } }),
-          `To część ilości, którą już mam wpisaną (${Core.fmtAmount(st.untracked)} ${sym} bez daty zakupu) – nie zwiększaj łącznej ilości`) : null,
-        h('div', { style: { display: 'flex', gap: '8px', marginTop: '6px' } },
-          h('button', { class: 'btn primary', onclick: save }, iconEl(form.editId ? 'check' : 'plus', 14), form.editId ? 'Zapisz zmiany' : 'Dodaj partię'),
-          form.editId ? h('button', { class: 'btn', onclick: () => { Object.assign(form, { editId: null, amount: '', price: '' }); draw(); } }, 'Anuluj edycję') : null)));
   }
 
-  sheet({ title: `${c.name} – partie zakupu`, subtitle: 'Każdy zakup osobno: data, ilość i cena. Zysk lub strata liczy się od ceny zakupu do bieżącego notowania.', body, wide: true, actions: [{ label: 'Gotowe', kind: 'primary' }], onClose: () => render(true) });
-  draw();
+  body.append(summaryBox, listBox, formBox);
+  state.onSheetQuotes = refreshDerived;
+  sheet({ title: `${c.name} – wpisy`, subtitle: 'Każdy zakup lub sprzedaż to osobny wpis. Posiadana ilość to ich suma – popraw dowolne pole wprost na liście, a wartość i wynik przeliczą się od razu.', body, wide: true, actions: [{ label: 'Gotowe', kind: 'primary' }], onClose: () => { state.onSheetQuotes = null; render(true); } });
+  drawList();
+  drawForm();
+  setTimeout(() => { const f = formBox.querySelector('input[inputmode]'); if (f && !lotsOf(id).length) f.focus(); }, 120);
 }
 
 // ───────────────────────── eksport / import pliku ─────────────────────────
@@ -744,10 +775,10 @@ function importFile() {
         title: 'Importuj portfel z pliku',
         subtitle: imp.exportedAt ? `Plik zapisano ${dateTimeStr(Date.parse(imp.exportedAt))}.` : f.name,
         body: h('div', null,
-          h('div', { class: 'note-box' }, iconEl('info', 16), h('div', null, `W pliku: pozycji w portfelu ${c.holdings}, partii zakupu ${c.lots}, obserwowanych ${c.watch}, alertów ${c.alerts}.`)),
+          h('div', { class: 'note-box' }, iconEl('info', 16), h('div', null, `W pliku: pozycji w portfelu ${c.holdings}, wpisów ${c.lots}, obserwowanych ${c.watch}, alertów ${c.alerts}.`)),
           Object.keys(state.data.holdings).length || state.data.alerts.length ? h('div', { class: 'field' }, h('label', null, 'Co zrobić z obecnymi danymi?'),
             segmented([{ value: 'merge', label: 'Połącz z plikiem' }, { value: 'replace', label: 'Zastąp danymi z pliku' }], mode, (v) => { mode = v; }),
-            h('div', { class: 'row-hint' }, 'Połączenie: monety z pliku dostają ilości z pliku, pozostałe zostają bez zmian. Zastąpienie: portfel, obserwowane i alerty będą dokładnie takie jak w pliku.')) : null),
+            h('div', { class: 'row-hint' }, 'Połączenie: monety z pliku dostają wpisy z pliku (zastępują obecne wpisy tej monety), pozostałe zostają bez zmian. Zastąpienie: portfel, obserwowane i alerty będą dokładnie takie jak w pliku.')) : null),
         actions: [{ label: 'Anuluj' }, { label: 'Importuj', kind: 'primary', onClick: apply }]
       });
     } catch (e) { errToast(e); }
@@ -775,14 +806,14 @@ function viewStats() {
   const stat = (label, ic, value, cls, sub, subCls) => h('div', { class: 'card stat' }, h('div', { class: 'label' }, iconEl(ic, 14), label), h('div', { class: 'value num ' + (cls || '') }, value), sub ? h('div', { class: 'stat-sub ' + (subCls || '') }, sub) : null);
   page.append(h('div', { class: 'grid grid-4' },
     stat('Wartość portfela', 'wallet', money(ps.total), '', assetsWord(ps.assets)),
-    stat('Zainwestowano', 'coins', ps.cost > 0 ? money(ps.cost) : '—', '', ps.cost > 0 ? (ps.costCoverage < 0.995 ? `cena zakupu znana dla ${Core.fmtPct(ps.costCoverage * 100, 0).replace('+', '')} portfela` : 'koszt posiadanych tokenów') : 'dodaj partie zakupu w Portfelu'),
+    stat('Zainwestowano', 'coins', ps.cost > 0 ? money(ps.cost) : '—', '', ps.cost > 0 ? (ps.costCoverage < 0.995 ? `cena zakupu znana dla ${Core.fmtPct(ps.costCoverage * 100, 0).replace('+', '')} portfela` : 'koszt posiadanych tokenów') : 'wpisz ceny zakupu we wpisach (Portfel)'),
     stat('Zysk / strata od zakupu', 'arrowUp', signed(ps.pnl), pctClass(ps.pnl), ps.pnl != null ? pct(ps.pnlPct) : 'brak cen zakupu', pctClass(ps.pnlPct)),
-    stat('Zysk zrealizowany', 'check', ps.realized ? signed(ps.realized) : '—', pctClass(ps.realized), 'ze sprzedaży zapisanych w partiach')));
+    stat('Zysk zrealizowany', 'check', ps.realized ? signed(ps.realized) : '—', pctClass(ps.realized), 'ze sprzedaży zapisanych we wpisach')));
   page.append(h('div', { class: 'grid grid-4', style: { marginTop: '16px' } },
     stat('Zmiana 1 h', 'clock', pct(ps.change1hPct), pctClass(ps.change1hPct)),
     stat('Zmiana 24 h', 'chart', pct(ps.change24hPct), pctClass(ps.change24hPct), signed(ps.change24hValue), pctClass(ps.change24hValue)),
     stat('Zmiana 7 dni', 'calendar', pct(ps.change7dPct), pctClass(ps.change7dPct), signed(ps.change7dValue), pctClass(ps.change7dValue)),
-    stat('Partie zakupu', 'layers', String(ps.lotsCount), '', ps.firstDate ? `pierwszy zakup ${dateStr(ps.firstDate)}` : 'brak zapisanych partii')));
+    stat('Wpisy (zakupy i sprzedaże)', 'layers', String(ps.lotsCount), '', ps.firstDate ? `pierwszy zakup ${dateStr(ps.firstDate)}` : 'brak wpisów z datą')));
 
   // struktura portfela
   const segs = allocSegments(p, 7);
@@ -872,29 +903,12 @@ function fact(k, v, hint, cls) {
 function perf(r, key) { return r ? `${r.coin.name} · ${Core.fmtPct(r[key])}` : '—'; }
 
 function addHoldingFlow() {
-  pickCoin({ title: 'Dodaj pozycję do portfela', onPick: (c) => { if (!state.market[c.id]) state.market[c.id] = { ...c }; editHolding(c); } });
-}
-
-function editHolding(c) {
-  const current = state.data.holdings[c.id] || 0;
-  const input = h('input', { class: 'input full', inputmode: 'decimal', placeholder: 'np. 0,25', value: current ? Core.fmtAmount(current) : '' });
-  const save = () => {
-    const n = Core.parseAmount(input.value);
-    if (!isFinite(n) || n < 0) { toast('Wpisz poprawną liczbę, np. 0,25', 'error'); return false; }
+  pickCoin({ title: 'Dodaj pozycję do portfela', onPick: (c) => {
+    if (!state.market[c.id]) state.market[c.id] = { ...c };
     addWatch(c, true);
-    if (!setHolding(c.id, n)) return false;
     refresh();
-    render(true);
-    toast(n > 0 ? `Zapisano: ${Core.fmtAmount(n)} ${String(c.symbol).toUpperCase()}` : 'Usunięto pozycję', 'success', 2200);
-  };
-  const sh = sheet({
-    title: `${c.name} – ilość`,
-    subtitle: 'Podaj, ile jednostek tej kryptowaluty posiadasz.',
-    body: h('div', { class: 'field' }, h('label', null, `Ilość (${String(c.symbol).toUpperCase()})`), input),
-    actions: [{ label: 'Anuluj' }, { label: 'Dodaj z datą i ceną zakupu…', onClick: () => { addWatch(c, true); setTimeout(() => openLots(c.id), 240); } }, { label: 'Zapisz', kind: 'primary', onClick: save }]
-  });
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && save() !== false) sh.close(); });
-  setTimeout(() => { input.focus(); input.select(); }, 60);
+    setTimeout(() => openLots(c.id), 240); // po zamknięciu wyszukiwarki otwiera się okno wpisów
+  } });
 }
 
 // ───────────────────────── szczegóły i wykres ─────────────────────────
@@ -906,6 +920,7 @@ function viewCoin() {
   const priceEl = h('div', { class: 'price' });
   const chipBox = h('span');
   const kv = h('div', { class: 'kv-grid' });
+  const amtEl = h('div', { class: 'big-amt num' });
   const valueEl = h('div', { class: 'muted', style: { marginTop: '8px' } });
   const readout = h('div', { class: 'chart-readout' });
   const box = h('div', { class: 'chart-box' });
@@ -927,6 +942,7 @@ function viewCoin() {
       cell('W obiegu', q.supply ? new Intl.NumberFormat('pl-PL', { notation: 'compact', maximumFractionDigits: 2 }).format(q.supply) + ' ' + String(c.symbol).toUpperCase() : '—'));
     const amt = state.data.holdings[id] || 0;
     const st = posStats(id);
+    amtEl.textContent = amt > 0 ? `${Core.fmtAmount(amt)} ${String(c.symbol).toUpperCase()}` : '—';
     valueEl.replaceChildren(amt > 0 && isFinite(q.price) ? `Wartość: ${money(amt * q.price)}` : amt > 0 ? 'Wartość: brak notowań' : 'Nie masz tej kryptowaluty w portfelu.',
       st.pnl != null ? h('div', { style: { marginTop: '4px' } }, 'Od zakupu: ', h('b', { class: pctClass(st.pnl) }, `${signed(st.pnl)} (${Core.fmtPct(st.pnlPct)})`), ` · średnia cena ${money(st.avgPrice)}`) : null);
   };
@@ -964,18 +980,6 @@ function viewCoin() {
     }
   };
 
-  const amt = state.data.holdings[id] || 0;
-  const amtInput = h('input', { class: 'input', style: { width: '180px', textAlign: 'right' }, inputmode: 'decimal', placeholder: '0', value: amt ? Core.fmtAmount(amt) : '', 'aria-label': 'Posiadana ilość' });
-  const saveAmt = () => {
-    const n = amtInput.value.trim() === '' ? 0 : Core.parseAmount(amtInput.value);
-    if (!isFinite(n) || n < 0) { toast('Wpisz poprawną liczbę, np. 0,25', 'error'); return; }
-    if (!setHolding(id, n)) { amtInput.value = Core.fmtAmount(state.data.holdings[id] || 0); return; }
-    amtInput.value = n ? Core.fmtAmount(n) : '';
-    fillQuotes(); renderSidebar();
-    toast(n > 0 ? 'Zapisano ilość' : 'Usunięto z portfela', 'success', 1800);
-  };
-  amtInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { saveAmt(); amtInput.blur(); } });
-
   const alerts = state.data.alerts.filter((a) => a.coinId === id);
   const watched = isWatched(id);
   fillQuotes();
@@ -999,9 +1003,9 @@ function viewCoin() {
       h('div', { class: 'two-col' },
         h('div', { class: 'card card-pad' },
           h('div', { class: 'card-title' }, iconEl('wallet', 16), 'Twoja pozycja'),
-          h('div', { class: 'inline-form' }, amtInput, h('span', { class: 'c-sym' }, c.symbol), h('button', { class: 'btn primary', onclick: saveAmt }, 'Zapisz')),
+          amtEl,
           valueEl,
-          h('div', { style: { marginTop: '12px' } }, h('button', { class: 'btn', onclick: () => openLots(id) }, iconEl('layers', 14), lotsOf(id).length ? `Partie zakupu (${lotsOf(id).length})` : 'Dodaj partie zakupu'))),
+          h('div', { style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => openLots(id) }, iconEl(lotsOf(id).length ? 'pencil' : 'plus', 14), lotsOf(id).length ? `Edytuj wpisy (${lotsOf(id).length})` : 'Dodaj ilość'))),
         h('div', { class: 'card card-pad' },
           h('div', { class: 'card-title' }, iconEl('bell', 16), 'Alerty', h('div', { class: 'spacer' }),
             h('button', { class: 'btn sm', onclick: () => editAlert({ coinId: id }) }, iconEl('plus', 12), 'Nowy alert')),
@@ -1114,197 +1118,13 @@ function editAlert(src) {
   });
 }
 
-// ───────────────────────── import ze zrzutu ekranu ─────────────────────────
-async function prepareImage(file) {
-  if (!file.type.startsWith('image/')) throw new Error(`${file.name || 'Plik'}: to nie jest obraz.`);
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('Nie mogę otworzyć tego formatu (zapisz zrzut jako PNG lub JPG).')); i.src = url; });
-    const scale = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(img.naturalWidth * scale);
-    canvas.height = Math.round(img.naturalHeight * scale);
-    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-    // do OCR bezstratny PNG (artefakty JPEG psują drobne litery), do Claude lżejszy JPEG
-    return { name: file.name || 'zrzut', dataUrl, ocrUrl: canvas.toDataURL('image/png'), data: dataUrl.split(',')[1], mediaType: 'image/jpeg' };
-  } finally { URL.revokeObjectURL(url); }
-}
-
-function claudeReady() {
-  if (!platform.claude || state.settings.ai.provider === 'api') return state.hasApiKey;
-  return !!(state.claude.status && state.claude.status.loggedIn);
-}
-
-function importMethod() {
-  const m = state.settings.import.method;
-  if (m === 'claude' || m === 'ocr') return m;
-  return claudeReady() ? 'claude' : 'ocr';
-}
-
-// Lista monet do rozpoznawania symboli (500 największych wg kapitalizacji).
-async function referenceCoins() {
-  const first = await Market.top(cur(), 1, { ttl: 15 * 60000 });
-  state.top = state.top || first;
-  let second = [];
-  try { second = await Market.top(cur(), 2, { ttl: 15 * 60000 }); } catch (_) { /* wystarczy pierwsza strona */ }
-  return [...first, ...second];
-}
-
-async function readScreenshot(image, onStatus) {
-  let method = importMethod();
-  const warnings = [];
-  let rows = null;
-  const coinsPromise = referenceCoins();
-  coinsPromise.catch(() => {});
-  if (method === 'claude') {
-    onStatus(platform.claude && state.settings.ai.provider !== 'api' ? 'Claude (Twoje konto) odczytuje zrzut…' : 'Claude odczytuje zrzut…');
-    try {
-      const r = await platform.extractHoldings({ data: image.data, mediaType: image.mediaType });
-      rows = r.rows; warnings.push(...r.warnings);
-    } catch (e) {
-      if (state.settings.import.method === 'claude') throw e;
-      warnings.push(`Claude nie odczytał zrzutu (${e.message}) – użyto odczytu lokalnego.`);
-      method = 'ocr';
-    }
-  }
-  const coins = await coinsPromise.catch(() => { throw new Error('Do rozpoznania tokenów potrzebne jest połączenie z internetem (lista kryptowalut).'); });
-  if (method === 'ocr') {
-    onStatus('Rozpoznaję tekst na zrzucie…');
-    const text = await Ocr.recognize(image.ocrUrl || image.dataUrl, (p) => onStatus(`Rozpoznaję tekst na zrzucie… ${Math.round(p * 100)}%`));
-    if (state.info.mock) console.log('OCR>>' + JSON.stringify(text));
-    rows = Core.parseOcrText(text, coins);
-    if (rows.length) warnings.push('Odczyt lokalny (OCR) bywa mniej dokładny – sprawdź ilości przed zapisaniem.');
-  }
-  const matched = Core.matchRows(rows, coins);
-  // nierozpoznane symbole: zapytaj wyszukiwarkę CoinGecko
-  for (const r of matched.filter((x) => !x.coin).slice(0, 8)) {
-    onStatus(`Szukam: ${r.symbol || r.name}…`);
-    try {
-      const found = await Market.search(r.symbol || r.name);
-      const exact = found.filter((f) => r.symbol && String(f.symbol).toUpperCase() === r.symbol.toUpperCase()).sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9));
-      const best = exact[0] || (r.name ? found.find((f) => f.name.toLowerCase() === r.name.toLowerCase()) : null);
-      if (best) r.coin = Core.pickCoin(best);
-    } catch (_) { /* zostaje do ręcznego wyboru */ }
-  }
-  return { rows: matched, warnings, method };
-}
-
-let importOpen = false;
-function onPaste(e) {
-  const item = [...((e.clipboardData && e.clipboardData.items) || [])].find((i) => i.type.startsWith('image/'));
-  if (!item || importOpen) return;
-  e.preventDefault();
-  openImport(item.getAsFile());
-}
-
-function openImport(file) {
-  importOpen = true;
-  const st = { image: null, busy: false, status: '', result: null, mode: 'replace', error: null };
-  const body = h('div');
-  const fileInput = h('input', { type: 'file', accept: 'image/*', class: 'hide' });
-  let sh = null;
-
-  const setFile = async (f) => {
-    if (!f) return;
-    try { st.image = await prepareImage(f); st.result = null; st.error = null; draw(); analyze(); } catch (e) { errToast(e); }
-  };
-  fileInput.addEventListener('change', () => { setFile(fileInput.files[0]); fileInput.value = ''; });
-
-  const analyze = async () => {
-    st.busy = true; st.error = null; st.status = 'Przygotowuję…'; draw();
-    try {
-      const r = await readScreenshot(st.image, (s) => { st.status = s; const el = body.querySelector('.an-status'); if (el) el.textContent = s; });
-      st.result = { ...r, rows: r.rows.map((x) => ({ ...x, sel: !!x.coin && x.amount != null, text: x.amount != null ? Core.fmtAmount(x.amount) : '' })) };
-      const ids = st.result.rows.filter((x) => x.coin && !state.market[x.coin.id]).map((x) => x.coin.id);
-      if (ids.length) Market.quotes(ids, cur()).then((qs) => { qs.forEach((q) => { state.market[q.id] = q; }); if (st.result) draw(); }).catch(() => {});
-    } catch (e) { st.error = e.message || String(e); }
-    st.busy = false; draw();
-  };
-
-  const apply = () => {
-    const rows = st.result.rows.filter((r) => r.sel && r.coin).map((r) => ({ coin: r.coin, amount: Core.parseAmount(r.text) }));
-    const bad = rows.find((r) => !isFinite(r.amount) || r.amount <= 0);
-    if (bad) { toast(`Popraw ilość dla ${bad.coin.name}`, 'error'); return false; }
-    if (!rows.length) { toast('Zaznacz co najmniej jedną pozycję', 'error'); return false; }
-    rows.forEach((r) => addWatch(r.coin, true));
-    const merged = Core.mergeHoldings(state.data.holdings, rows.map((r) => ({ id: r.coin.id, amount: r.amount })), st.mode);
-    for (const r of rows) state.data = Core.setTotal(state.data, r.coin.id, merged[r.coin.id]);
-    saveData();
-    refresh();
-    go('portfolio');
-    toast(`Dodano ${rows.length} ${rows.length === 1 ? 'pozycję' : rows.length < 5 ? 'pozycje' : 'pozycji'} do portfela`, 'success', 3000);
-  };
-
-  const reviewRow = (r) => {
-    const q = r.coin ? state.market[r.coin.id] : null;
-    const amount = Core.parseAmount(r.text);
-    const val = h('div', { class: 'val' }, q && isFinite(q.price) && isFinite(amount) ? money(amount * q.price) : '');
-    const input = h('input', { class: 'input', inputmode: 'decimal', placeholder: 'ilość', value: r.text, 'aria-label': 'Ilość',
-      oninput: (e) => { r.text = e.target.value; const a = Core.parseAmount(r.text); val.textContent = q && isFinite(q.price) && isFinite(a) ? money(a * q.price) : ''; } });
-    const change = () => pickCoin({ title: `Wybierz kryptowalutę dla „${r.symbol || r.name}”`, onPick: (c) => { r.coin = Core.pickCoin(c); r.sel = true; if (!state.market[c.id]) Market.quotes([c.id], cur()).then((qs) => { qs.forEach((x) => { state.market[x.id] = x; }); draw(); }).catch(() => {}); draw(); } });
-    return h('div', { class: 'review-row' },
-      h('input', { type: 'checkbox', checked: r.sel, disabled: r.coin ? null : true, 'aria-label': 'Uwzględnij', onchange: (e) => { r.sel = e.target.checked; } }),
-      r.coin ? coinCell(r.coin, r.note || '') : h('div', { class: 'c-coin' }, h('span', { class: 'c-ic ph' }, '?'), h('div', null, h('div', { class: 'c-name' }, r.symbol || r.name), h('div', { class: 'c-sym', style: { textTransform: 'none' } }, 'nie rozpoznano'))),
-      h('button', { class: 'btn sm', onclick: change }, r.coin ? 'Zmień' : 'Wybierz'),
-      input, val);
-  };
-
-  function draw() {
-    if (!st.image) {
-      const dz = h('div', { class: 'dropzone', role: 'button', tabindex: '0', onclick: () => fileInput.click() },
-        h('div', { class: 'dz-ic', html: icon('photo', 30) }),
-        h('h2', null, 'Wybierz zrzut ekranu'),
-        h('p', null, platform.desktop ? 'Przeciągnij tutaj obraz, kliknij, aby wybrać plik, albo wklej zrzut ze schowka (Ctrl+V).' : 'Dotknij, aby wybrać zrzut ekranu z galerii.'));
-      dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('over'); });
-      dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-      dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('over'); setFile(e.dataTransfer.files[0]); });
-      body.replaceChildren(dz, fileInput,
-        h('p', { class: 'group-footer' }, importMethod() === 'claude'
-          ? 'Zrzut odczyta Claude – obraz zostanie wysłany do usługi Claude (Anthropic).'
-          : 'Zrzut zostanie odczytany lokalnie na tym urządzeniu (OCR) – obraz nie jest nigdzie wysyłany. Dokładniejszy odczyt przez Claude włączysz w Ustawieniach.'));
-      setActions([{ label: 'Anuluj' }]);
-      return;
-    }
-    const preview = h('div', { class: 'import-preview' }, h('img', { src: st.image.dataUrl, alt: 'Podgląd wczytanego zrzutu' }),
-      h('div', { style: { flex: 1, minWidth: 0 } },
-        st.busy ? h('div', { class: 'analyzing', style: { padding: '6px 0' } }, spinner(18), h('span', { class: 'an-status' }, st.status)) : null,
-        st.error ? h('div', { class: 'note-box warn' }, iconEl('warn', 16), h('div', null, st.error)) : null,
-        st.result ? h('div', null,
-          h('div', { style: { fontWeight: 650, fontSize: '14px' } }, st.result.rows.length ? `Odczytano pozycji: ${st.result.rows.length}` : 'Nie znaleziono żadnych tokenów'),
-          h('div', { class: 'muted small', style: { marginTop: '3px' } }, st.result.method === 'claude' ? 'Odczyt: Claude' : 'Odczyt: lokalny (OCR)'),
-          st.result.warnings.map((w) => h('div', { class: 'issue warn' }, iconEl('warn', 14), h('span', null, w)))) : null,
-        !st.busy ? h('div', { style: { display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } },
-          h('button', { class: 'btn sm', onclick: () => fileInput.click() }, 'Inny zrzut'),
-          st.error || (st.result && !st.result.rows.length) ? h('button', { class: 'btn sm', onclick: analyze }, iconEl('refresh', 12), 'Spróbuj ponownie') : null) : null));
-    const list = st.result && st.result.rows.length ? h('div', null,
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '6px 0 4px', flexWrap: 'wrap' } },
-        h('span', { class: 'muted' }, 'Ilości z tego zrzutu:'),
-        segmented([{ value: 'replace', label: 'zastąpią obecne' }, { value: 'add', label: 'zostaną dodane do obecnych' }], st.mode, (v) => { st.mode = v; })),
-      st.result.rows.map(reviewRow)) : null;
-    body.replaceChildren(preview, list || '', fileInput);
-    setActions(st.result && st.result.rows.length ? [{ label: 'Anuluj' }, { label: 'Dodaj do portfela', kind: 'primary', onClick: apply }] : [{ label: 'Zamknij' }]);
-  }
-
-  function setActions(actions) {
-    if (!sh) return;
-    const bar = sh.panel.querySelector('.sheet-actions');
-    bar.replaceChildren(...actions.map((a) => h('button', { class: 'btn ' + (a.kind || ''), onclick: async () => { if (a.onClick && (await a.onClick()) === false) return; sh.close(); } }, a.label)));
-  }
-
-  sh = sheet({ title: 'Wczytaj zrzut ekranu', subtitle: 'Zrzut z giełdy lub portfela z listą tokenów i ich ilościami.', body, wide: true, actions: [{ label: 'Anuluj' }], onClose: () => { importOpen = false; } });
-  draw();
-  if (file) setFile(file);
-}
-
 // ───────────────────────── ustawienia ─────────────────────────
 function viewSettings() {
   const tabs = [
     { value: 'general', label: 'Ogólne', icon: 'gear' },
-    { value: 'import', label: 'Odczyt zrzutów', icon: 'camera' },
     { value: 'about', label: 'O aplikacji', icon: 'info' }
   ];
-  const body = { general: settingsGeneral, import: settingsImport, about: settingsAbout }[state.settingsTab]();
+  const body = { general: settingsGeneral, about: settingsAbout }[state.settingsTab]();
   return h('div', null,
     h('div', { class: 'toolbar' }, h('h1', null, 'Ustawienia')),
     h('div', { class: 'page' },
@@ -1333,8 +1153,9 @@ function settingsGeneral() {
       ], s.window.closeAction, (v) => saveSettings({ window: { closeAction: v } }, true)), { icon: 'eye', color: 'var(--indigo)', hint: 'Schowaną aplikację otworzysz ikoną w zasobniku lub uruchamiając ją ponownie; zakończysz z menu ikony.' }),
       row('Wygląd', segmented([{ value: 'system', label: 'Systemowy' }, { value: 'light', label: 'Jasny' }, { value: 'dark', label: 'Ciemny' }], s.ui.theme, (v) => saveSettings({ ui: { theme: v } }, true)), { icon: 'moon', color: 'var(--purple)' })
     ], state.info.hasTray ? null : 'Na tym systemie nie udało się utworzyć ikony w zasobniku – okno będzie minimalizowane na pasek zadań.') : null,
+    platform.desktop ? browserGroup() : null,
     group('Przenoszenie danych', [
-      row('Zapisz portfel do pliku', h('button', { class: 'btn', onclick: exportFile }, iconEl('download', 14), 'Eksportuj'), { icon: 'download', color: 'var(--accent)', hint: 'Plik zawiera ilości, partie zakupu, obserwowane i alerty.' }),
+      row('Zapisz portfel do pliku', h('button', { class: 'btn', onclick: exportFile }, iconEl('download', 14), 'Eksportuj'), { icon: 'download', color: 'var(--accent)', hint: 'Plik zawiera wpisy (ilości, daty, ceny), obserwowane i alerty.' }),
       row('Wczytaj portfel z pliku', h('button', { class: 'btn', onclick: importFile }, iconEl('upload', 14), 'Importuj'), { icon: 'upload', color: 'var(--green)', hint: 'Ten sam plik działa na Linuksie i na Androidzie.' })
     ], platform.desktop ? null : 'Na Androidzie po eksporcie otworzy się okno udostępniania – zapisz plik w Plikach lub na Dysku albo wyślij go na inne urządzenie.'),
     group('Alerty', [
@@ -1343,46 +1164,38 @@ function settingsGeneral() {
     ]));
 }
 
-function settingsImport() {
-  const s = state.settings;
-  const hasAccount = !!platform.claude;
-  const status = h('div', { class: 'status-line' });
-  const adv = state.claude.advanced || s.ai.provider === 'api' || !hasAccount;
-  const testBtn = h('button', { class: 'btn' }, iconEl('bolt', 14), 'Testuj połączenie');
-  testBtn.addEventListener('click', () => busy(testBtn, async () => {
-    status.className = 'status-line';
-    status.replaceChildren(spinner(12), ' Łączę…');
-    try { const r = await platform.testAi(); status.className = 'status-line ok'; status.replaceChildren(iconEl('checkCircle', 14), r); } catch (e) { status.className = 'status-line bad'; status.replaceChildren(iconEl('warn', 14), e.message); }
-  }, 'Testuję…'));
-  const keyInput = h('input', { class: 'input', type: 'password', style: { width: '280px' }, placeholder: state.hasApiKey ? '•••••••• (zapisany)' : 'sk-ant-…', 'aria-label': 'Klucz API Claude' });
-  const ccStatus = state.claudePath ? h('div', { class: 'status-line ok' }, iconEl('checkCircle', 14), h('span', { class: 'path' }, state.claudePath))
-    : h('div', { class: 'status-line bad' }, iconEl('warn', 14), 'Nie znaleziono Claude Code');
-  const apiGroup = group('Klucz API Claude', [
-    row('Klucz', h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, keyInput,
-      h('button', { class: 'btn', onclick: async () => { try { state.hasApiKey = await platform.setApiKey(keyInput.value); keyInput.value = ''; toast(state.hasApiKey ? 'Zapisano klucz' : 'Usunięto klucz', 'success'); render(); } catch (e) { errToast(e); } } }, 'Zapisz')), { icon: 'key', color: 'var(--green)' }),
-    row('Model', select([{ value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (zalecany)' }, { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' }, { value: 'claude-haiku-5-5', label: 'Claude Haiku 5.5' }], s.ai.apiModel, (v) => saveSettings({ ai: { apiModel: v } })), { icon: 'sparkles', color: 'var(--purple)' }),
-    row('Pobierz klucz', h('button', { class: 'btn sm', onclick: () => platform.openExternal('https://platform.claude.com/settings/keys') }, 'platform.claude.com'), { icon: 'globe', color: 'var(--teal)' })
-  ], 'Klucz API jest rozliczany osobno, za faktyczne zużycie – niezależnie od planu Claude.' + (hasAccount ? '' : ' Klucz jest zapisywany w pamięci aplikacji na tym urządzeniu.'));
-
-  return h('div', null,
-    group('Sposób odczytu zrzutów', [
-      row('Odczyt', segmented([{ value: 'auto', label: 'Automatycznie' }, { value: 'claude', label: 'Claude' }, { value: 'ocr', label: 'Lokalnie (OCR)' }], s.import.method, async (v) => { await saveSettings({ import: { method: v } }, true); render(true); }), { icon: 'camera', color: 'var(--accent)' })
-    ], 'Automatycznie: Claude, jeśli jest połączony – w przeciwnym razie odczyt lokalny. Claude czyta zrzuty dokładniej (obraz jest wysyłany do usługi Claude). Odczyt lokalny działa bez konta, a obraz nie opuszcza urządzenia.'),
-    hasAccount && s.ai.provider === 'claude-code' ? h('div', { class: 'group' }, h('h3', { class: 'group-title' }, 'Konto Claude'), h('div', { class: 'group-body' }, accountCard()),
-      h('p', { class: 'group-footer' }, 'Logujesz się na oficjalnej stronie Claude – aplikacja nie widzi Twojego hasła i nie przechowuje danych logowania. Zapytania wykonuje program Claude Code w ramach Twojego planu.')) : null,
-    hasAccount && s.ai.provider === 'claude-code' ? group('Model', [
-      row('Model Claude', select([{ value: 'sonnet', label: 'Sonnet (zalecany)' }, { value: 'opus', label: 'Opus (najmocniejszy)' }, { value: 'haiku', label: 'Haiku (najszybszy)' }], s.ai.model, (v) => saveSettings({ ai: { model: v } })), { icon: 'sparkles', color: 'var(--purple)' })
-    ]) : null,
-    hasAccount ? h('div', { class: 'group' }, h('button', { class: 'btn plain', onclick: () => { state.claude.advanced = !adv; render(); } }, iconEl(adv ? 'chevronL' : 'chevronR', 12), adv ? 'Ukryj ustawienia zaawansowane' : 'Ustawienia zaawansowane')) : null,
-    adv ? h('div', null,
-      hasAccount ? group('Sposób połączenia', [
-        row('Dostawca', segmented([{ value: 'claude-code', label: 'Konto Claude' }, { value: 'api', label: 'Klucz API' }], s.ai.provider, async (v) => { await saveSettings({ ai: { provider: v } }, true); if (v === 'claude-code') refreshClaude(); render(); }), { icon: 'cpu', color: 'var(--accent)' })
-      ]) : null,
-      s.ai.provider === 'api' || !hasAccount ? apiGroup : group('Claude Code', [
-        row('Program', h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end' } }, ccStatus,
-          h('button', { class: 'btn sm', onclick: async () => { try { const p = await platform.claude.browse(); if (p) { state.claudePath = p; await refreshClaude(); } } catch (e) { errToast(e); } } }, 'Wskaż ręcznie…')), { icon: 'cpu', color: 'var(--orange)' })
-      ]),
-      h('div', { class: 'group', style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' } }, testBtn, status)) : null);
+// Podgląd w przeglądarce: lokalny serwer w aplikacji (tylko ten komputer) – adres można otworzyć w Vivaldim lub Chrome.
+function browserGroup() {
+  const b = state.settings.browser || { enabled: false, port: 47820 };
+  const box = h('div', { class: 'status-line' });
+  const portInput = h('input', { class: 'input', style: { width: '90px' }, inputmode: 'numeric', value: String(b.port), 'aria-label': 'Port podglądu',
+    onchange: async (e) => {
+      const n = Number(e.target.value);
+      if (!Number.isInteger(n) || n < 1024 || n > 65535) { toast('Podaj port z zakresu 1024–65535', 'error'); e.target.value = String(state.settings.browser.port); return; }
+      await saveSettings({ browser: { port: n } }, true); showStatus();
+    } });
+  const showStatus = async () => {
+    try {
+      const st = await platform.browserStatus();
+      if (!state.settings.browser.enabled) { box.className = 'status-line'; box.replaceChildren('Wyłączony.'); return; }
+      if (st.running) {
+        box.className = 'status-line ok';
+        box.replaceChildren(iconEl('checkCircle', 14), h('span', { class: 'path' }, st.url),
+          h('button', { class: 'btn sm', onclick: () => platform.browserOpen().catch(errToast) }, iconEl('external', 12), 'Otwórz w przeglądarce'),
+          h('button', { class: 'btn sm', onclick: async () => { try { await navigator.clipboard.writeText(st.url); toast('Skopiowano adres', 'success', 1600); } catch (_) { toast(st.url, 'info', 6000); } } }, 'Kopiuj adres'));
+      } else {
+        box.className = 'status-line bad';
+        box.replaceChildren(iconEl('warn', 14), st.error || 'Uruchamiam…');
+        if (!st.error) setTimeout(showStatus, 600);
+      }
+    } catch (e) { box.className = 'status-line bad'; box.replaceChildren(iconEl('warn', 14), e.message); }
+  };
+  showStatus();
+  return group('Podgląd w przeglądarce', [
+    row('Udostępnij w przeglądarce', toggle(!!b.enabled, async (v) => { await saveSettings({ browser: { enabled: v } }, true); render(true); }), { icon: 'globe', color: 'var(--accent)', hint: 'Te same dane i wykresy otworzysz w Vivaldim, Chrome lub Edge. Adres działa tylko na tym komputerze, a aplikacja musi być uruchomiona.' }),
+    b.enabled ? row('Port', portInput, { icon: 'cpu', color: 'var(--orange)' }) : null,
+    row('Adres', box, { icon: 'external', color: 'var(--green)', stack: true })
+  ], 'Vivaldi: dodaj adres jako panel internetowy (przycisk „+” na pasku bocznym) – wąski panel pokazuje wersję kompaktową. Zmiany zrobione w przeglądarce i w aplikacji synchronizują się w kilka sekund; alerty i powiadomienia obsługuje okno aplikacji.');
 }
 
 function settingsAbout() {
@@ -1392,77 +1205,6 @@ function settingsAbout() {
       row('Notowania', h('button', { class: 'btn sm', onclick: () => platform.openExternal('https://www.coingecko.com') }, 'CoinGecko', iconEl('external', 12)), { icon: 'globe', color: 'var(--green)' }),
       platform.desktop ? row('Folder danych', h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' } }, h('span', { class: 'path' }, state.info.dataDir), h('button', { class: 'btn sm', onclick: () => platform.openDataDir() }, 'Otwórz')), { icon: 'folder', color: 'var(--orange)' }) : null
     ], 'Portfel, obserwowane i alerty są zapisywane wyłącznie na tym urządzeniu. Notowania mają charakter informacyjny i nie stanowią porady inwestycyjnej.'));
-}
-
-// ───────────────────────── konto Claude ─────────────────────────
-function accountCard() {
-  const C = state.claude;
-  const st = C.status;
-  const wrap = h('div', { class: 'account' });
-  if (!st) {
-    wrap.append(h('div', { class: 'acc-row' }, spinner(18), h('span', { class: 'muted' }, 'Sprawdzam połączenie z kontem Claude…')));
-    return wrap;
-  }
-  const logo = (cls) => h('div', { class: 'acc-logo ' + (cls || ''), html: icon(st.loggedIn ? 'checkCircle' : 'person', 24) });
-  if (st.loggedIn) {
-    wrap.append(h('div', { class: 'acc-row' }, logo('ok'),
-      h('div', { style: { flex: 1 } },
-        h('div', { class: 'acc-title' }, 'Połączono z kontem Claude'),
-        h('div', { class: 'muted small' }, [st.email, st.plan ? `plan ${st.plan}` : null].filter(Boolean).join(' · ') || 'Aplikacja korzysta z Twojego planu Claude.')),
-      h('button', { class: 'btn', onclick: (e) => busy(e.currentTarget, async () => { try { const r = await platform.testAi(); toast(r, 'success', 5000); } catch (er) { errToast(er); } }, 'Testuję…') }, iconEl('bolt', 14), 'Testuj'),
-      h('button', { class: 'btn danger', onclick: async () => { try { C.status = await platform.claude.logout(); render(); } catch (er) { errToast(er); } } }, 'Wyloguj')));
-    return wrap;
-  }
-  if (!st.installed) {
-    wrap.append(h('div', { class: 'acc-row' }, logo(),
-      h('div', { style: { flex: 1 } },
-        h('div', { class: 'acc-title' }, 'Połącz aplikację ze swoim kontem Claude'),
-        h('div', { class: 'muted small' }, 'Jednorazowo zainstaluję oficjalny program Claude Code od Anthropic (ok. 1 minuty), a potem otworzę stronę logowania Claude.')),
-      h('button', { class: 'btn primary lg', disabled: C.installing || null, onclick: installAndLogin }, C.installing ? spinner(14) : iconEl('upload', 15), C.installing ? 'Instaluję…' : 'Zainstaluj i połącz')));
-    if (C.installing || C.log) wrap.append(h('pre', { class: 'acc-log' }, (C.log || '').split('\n').slice(-6).join('\n')));
-    return wrap;
-  }
-  const L = C.login;
-  if (!L) {
-    wrap.append(h('div', { class: 'acc-row' }, logo(),
-      h('div', { style: { flex: 1 } },
-        h('div', { class: 'acc-title' }, 'Zaloguj się swoim kontem Claude'),
-        h('div', { class: 'muted small' }, 'Otworzy się strona logowania Claude w przeglądarce – zaloguj się tak samo jak na claude.ai.')),
-      h('button', { class: 'btn primary lg', onclick: startLogin }, iconEl('key', 15), 'Zaloguj się')));
-    return wrap;
-  }
-  const code = h('input', { class: 'input', style: { flex: 1 }, placeholder: 'Wklej kod ze strony logowania (jeśli się pojawił)' });
-  wrap.append(
-    h('div', { class: 'acc-row' }, h('div', { class: 'acc-logo' }, spinner(20)),
-      h('div', { style: { flex: 1 } },
-        h('div', { class: 'acc-title' }, 'Czekam na zalogowanie w przeglądarce…'),
-        h('div', { class: 'muted small' }, 'Zaloguj się na stronie Claude, która otworzyła się w przeglądarce. Po zalogowaniu aplikacja połączy się sama.')),
-      h('button', { class: 'btn', onclick: async () => { await platform.claude.cancel(); C.login = null; render(); } }, 'Anuluj')),
-    h('div', { class: 'acc-sub' },
-      L.url ? h('button', { class: 'btn plain sm', onclick: () => platform.openExternal(L.url) }, iconEl('globe', 12), 'Przeglądarka się nie otworzyła? Otwórz stronę logowania') : null,
-      h('div', { style: { display: 'flex', gap: '8px', marginTop: '8px' } }, code,
-        h('button', { class: 'btn primary', onclick: async () => { if (!code.value.trim()) return; try { await platform.claude.code(code.value); toast('Przekazano kod – trwa łączenie…', 'info', 3000); } catch (er) { errToast(er); } } }, 'Zatwierdź kod'))));
-  return wrap;
-}
-
-async function refreshClaude() {
-  try { state.claude.status = await platform.claude.status(); } catch (e) { state.claude.status = { installed: false, loggedIn: false }; }
-  if (state.view === 'settings') render(true);
-}
-
-async function installAndLogin() {
-  const C = state.claude;
-  C.installing = true; C.log = ''; render();
-  try {
-    C.status = await platform.claude.install();
-    C.installing = false; render();
-    if (C.status.installed && !C.status.loggedIn) await startLogin();
-  } catch (e) { C.installing = false; errToast(e); render(); }
-}
-
-async function startLogin() {
-  const C = state.claude;
-  try { C.login = { stage: 'start' }; render(); await platform.claude.login(); state.settings = (await platform.load()).settings; } catch (e) { C.login = null; errToast(e); render(); }
 }
 
 init().catch((e) => { console.error(e); document.getElementById('content').textContent = 'Błąd uruchamiania: ' + (e.message || e); });

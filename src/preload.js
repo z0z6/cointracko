@@ -16,21 +16,13 @@ contextBridge.exposeInMainWorld('api', {
   getJson: (url, key) => call('net:getJson', url, key),
   notify: (title, body) => call('notify', title, body),
   setTrayInfo: (text) => call('tray:info', text),
-  setApiKey: (k) => call('apikey:set', k),
-  testAi: () => call('ai:test'),
-  extractHoldings: (image) => call('ai:extractHoldings', image),
-  claudeStatus: () => call('claude:status'),
-  claudeInstall: () => call('claude:install'),
-  claudeLogin: () => call('claude:login'),
-  claudeCode: (code) => call('claude:code', code),
-  claudeCancel: () => call('claude:cancel'),
-  claudeLogout: () => call('claude:logout'),
-  browseClaude: () => call('ai:browseClaude'),
+  browserStatus: () => call('browser:status'),
+  browserOpen: () => call('browser:open'),
   saveFile: (name, text) => call('file:save', name, text),
   openExternal: (u) => call('shell:openExternal', u),
   openDataDir: () => call('shell:openDataDir'),
   on: (channel, fn) => {
-    const allowed = ['window:state', 'claude:log', 'claude:login', 'app:refresh', 'app:shown'];
+    const allowed = ['window:state', 'app:refresh', 'app:shown', 'data:external', 'settings:external'];
     if (!allowed.includes(channel)) return () => {};
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on(channel, h);

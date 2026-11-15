@@ -12,12 +12,15 @@ class Store {
     fs.mkdirSync(dir, { recursive: true });
     this.file = path.join(dir, 'cointracko-dane.json');
     this.state = this._load();
+    this.rev = 1; // licznik zmian – przeglądarka sprawdza go, żeby wiedzieć, kiedy odświeżyć dane
   }
 
   _load() {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      return { version: 1, settings: deepMerge(DEFAULT_SETTINGS, raw.settings || {}), data: sanitizeData(raw.data) };
+      const settings = deepMerge(DEFAULT_SETTINGS, raw.settings || {});
+      delete settings.ai; delete settings.import; // dawne ustawienia importu ze zrzutu i konta Claude
+      return { version: 1, settings, data: sanitizeData(raw.data) };
     } catch (e) {
       if (fs.existsSync(this.file)) {
         try { fs.copyFileSync(this.file, this.file + '.uszkodzony-' + Date.now()); } catch (_) { /* ignore */ }
@@ -37,12 +40,14 @@ class Store {
 
   updateSettings(patch) {
     this.state.settings = deepMerge(this.state.settings, patch);
+    this.rev++;
     this.save();
     return this.state.settings;
   }
 
   setData(data) {
     this.state.data = sanitizeData(data);
+    this.rev++;
     this.save();
     return true;
   }

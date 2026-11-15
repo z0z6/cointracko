@@ -5,11 +5,10 @@ Notowania kryptowalut na żywo, portfel, alerty i wykresy – na Linuksa (AppIma
 ## Co potrafi
 
 - **Notowania na żywo** – po uruchomieniu aplikacja sama łączy się z siecią i odświeża dane (co 30 s – 5 min, do wyboru); przy braku połączenia ponawia próby i pokazuje ostatnie znane ceny.
-- **Portfel** – ilości posiadanych tokenów edytujesz ręcznie, a wartość (USD / PLN / EUR) przelicza się przy każdej aktualizacji.
-- **Partie zakupu** – każdy zakup (i sprzedaż) osobno: data, ilość, cena; cenę z wybranego dnia można pobrać jednym kliknięciem. Aplikacja liczy średnią cenę zakupu oraz zysk/stratę od zakupu do teraz – dla partii, pozycji i całego portfela.
+- **Portfel i wpisy** – każda pozycja składa się z wpisów (zakup lub sprzedaż: data, ilość, cena). Posiadana ilość to zawsze suma wpisów, a każdy wpis – także dawny „bez daty” – można poprawić wprost na liście; wartość (USD / PLN / EUR) i suma na Pulpicie przeliczają się od razu. Cenę z wybranego dnia można pobrać jednym kliknięciem. Aplikacja liczy średnią cenę zakupu oraz zysk/stratę od zakupu do teraz – dla wpisu, pozycji i całego portfela.
 - **Statystyki** – wykres kołowy struktury portfela, zainwestowana kwota, zysk niezrealizowany i zrealizowany, zmiany 1 h / 24 h / 7 dni, wartość portfela w czasie (z największym obsunięciem), koncentracja, najlepsze i najsłabsze pozycje, tabela wyników.
-- **Eksport / import** – portfel (ilości, partie, obserwowane, alerty) zapisuje się do pliku `cointracko-portfel-RRRR-MM-DD.json`, który można wczytać na innym urządzeniu – ten sam plik działa na Linuksie i Androidzie.
-- **Wczytywanie zrzutu ekranu** – zrzut z giełdy lub portfela (plik, przeciągnięcie, Ctrl+V) → aplikacja odczytuje tokeny i ilości, dodaje je do obserwowanych i wycenia. Odczyt przez Claude (konto Claude na komputerze albo klucz API) lub lokalnie przez OCR, bez wysyłania obrazu.
+- **Eksport / import** – portfel (wpisy, obserwowane, alerty) zapisuje się do pliku `cointracko-portfel-RRRR-MM-DD.json`, który można wczytać na innym urządzeniu – ten sam plik działa na Linuksie i Androidzie.
+- **Podgląd w przeglądarce** (Linux) – w Ustawieniach można udostępnić interfejs pod lokalnym adresem `http://127.0.0.1:47820/` (tylko ten komputer). Otworzysz go w Vivaldim, Chrome lub Edge, także jako panel boczny Vivaldiego; dane, wykresy i edycja synchronizują się z aplikacją. Alerty obsługuje okno aplikacji.
 - **Alerty** – cena powyżej/poniżej poziomu albo zmiana o zadany procent w 24 h; powiadomienia systemowe, alerty jednorazowe i powtarzalne.
 - **Wykresy** – 24 h, 7 dni, 30 dni, 90 dni, 1 rok, z celownikiem pod kursorem; lista obserwowanych i ranking Top 100.
 - **Linux** – okno w stylu macOS z przyciskami po prawej (minimalizuj, maksymalizuj, zamknij); zamknięcie okna chowa aplikację do zasobnika (lub minimalizuje na pasek zadań – do wyboru w Ustawieniach).
@@ -33,7 +32,7 @@ Na Androidzie: skopiuj plik APK na telefon i zainstaluj (trzeba zezwolić na ins
 ## Praca lokalna
 
 ```bash
-npm install          # instaluje zależności i kopiuje czcionkę oraz silnik OCR do src/renderer/vendor
+npm install          # instaluje zależności i kopiuje czcionkę do src/renderer/vendor
 npm start            # uruchamia aplikację (Electron)
 npm test             # testy logiki
 npm run dist:linux   # AppImage w dist/
@@ -45,9 +44,9 @@ npm run android:apk  # APK (wymaga Android SDK i JDK 21)
 ## Budowa
 
 - `src/renderer/` – cały interfejs i logika (czysty JS, bez bundlera); ten sam katalog działa w Electronie i w aplikacji na Androida (Capacitor).
-  - `core.js` – logika wspólna (portfel, alerty, czytanie zrzutów, formatowanie), testowana w `test/run-tests.js`
-  - `market.js` – klient CoinGecko, `chart.js` – wykresy, `ocr.js` – lokalny OCR (Tesseract), `platform.js` – różnice Electron/Android
-- `src/main/` – proces główny Electrona (okno, zasobnik, powiadomienia, dane w pliku JSON, połączenie z kontem Claude przez Claude Code)
+  - `core.js` – logika wspólna (portfel, wpisy, alerty, statystyki, formatowanie), testowana w `test/run-tests.js`
+  - `market.js` – klient CoinGecko, `chart.js` – wykresy, `platform.js` – różnice Electron / Android / przeglądarka
+- `src/main/` – proces główny Electrona (okno, zasobnik, powiadomienia, dane w pliku JSON, `web-server.js` – lokalny podgląd w przeglądarce)
 - `android/` – projekt Android (Capacitor). Plik `android/app/cointracko.keystore` to stały klucz podpisu trzymany w repozytorium, dzięki czemu kolejne wersje APK instalują się jako aktualizacja. Do publikacji w sklepie użyj własnego klucza.
 
 Dane (portfel, obserwowane, alerty) są zapisywane wyłącznie na urządzeniu. Notowania mają charakter informacyjny i nie stanowią porady inwestycyjnej.
