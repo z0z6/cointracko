@@ -10,3 +10,8 @@ updates:
   - package-ecosystem: gradle
     directory: /android
     schedule: { interval: weekly }
+    ignore:
+      # Gradle 9.6+ usuwa wewnętrzne API używane przez wtyczkę Android (AGP 8.x) – budowa APK przestaje działać.
+      # Odblokować po przejściu na AGP 9.
+      - dependency-name: "gradle-wrapper"
+        update-types: ["version-update:semver-major"]
