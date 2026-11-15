@@ -8,6 +8,7 @@ const path = require('path');
 const Core = require('../src/renderer/core');
 const { Store } = require('../src/main/store');
 const { BrowserServer } = require('../src/main/web-server');
+const Autostart = require('../src/main/autostart');
 
 let passed = 0;
 function test(name, fn) {
@@ -263,6 +264,28 @@ test('Store: zapis, odczyt, scalanie ustawień, odporność na uszkodzony plik',
   s = new Store(dir);
   assert.deepStrictEqual(s.data.watch, []);
   assert.ok(fs.readdirSync(dir).some((f) => f.includes('uszkodzony')));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+console.log('Autostart');
+test('autostart: polecenie, wpis XDG, zapis i usunięcie', () => {
+  assert.strictEqual(Autostart.execPath({ APPIMAGE: '/home/u/Aplikacje/CoinTracko.AppImage' }, '/tmp/.mount_x/cointracko.bin'), '/home/u/Aplikacje/CoinTracko.AppImage');
+  assert.strictEqual(Autostart.execPath({}, '/opt/CoinTracko/cointracko.bin'), '/opt/CoinTracko/cointracko', 'z paczki .deb uruchamiamy skrypt (z --no-sandbox), nie plik .bin');
+  assert.strictEqual(Autostart.quoteExec('/home/u/Moje "apki"/a$b'), '"/home/u/Moje \\"apki\\"/a\\$b"');
+  const entry = Autostart.desktopEntry({ exe: '/opt/CoinTracko/cointracko', hidden: true });
+  assert.ok(entry.includes('Exec="/opt/CoinTracko/cointracko" --hidden\n') && entry.startsWith('[Desktop Entry]\nType=Application'));
+  assert.ok(!Autostart.desktopEntry({ exe: '/x', hidden: false }).includes('--hidden'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-auto-'));
+  const sub = path.join(dir, 'autostart');
+  const f = Autostart.setLinuxAutostart(true, { exe: '/opt/CoinTracko/cointracko', hidden: true, dir: sub });
+  assert.ok(fs.readFileSync(f, 'utf8').includes('--hidden'));
+  Autostart.setLinuxAutostart(true, { exe: '/nowa/sciezka.AppImage', hidden: false, dir: sub });
+  assert.ok(fs.readFileSync(f, 'utf8').includes('Exec="/nowa/sciezka.AppImage"\n'), 'ponowny zapis podmienia ścieżkę');
+  assert.strictEqual(Autostart.setLinuxAutostart(false, { dir: sub }), null);
+  assert.ok(!fs.existsSync(f));
+  assert.strictEqual(Autostart.setLinuxAutostart(false, { dir: sub }), null, 'usuwanie nieistniejącego wpisu nie psuje');
+  assert.strictEqual(Autostart.autostartDir({ XDG_CONFIG_HOME: '/x/cfg' }), '/x/cfg/autostart');
+  assert.strictEqual(Core.DEFAULT_SETTINGS.window.autostart, true);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

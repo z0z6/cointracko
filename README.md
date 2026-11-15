@@ -12,6 +12,7 @@ Notowania kryptowalut na żywo, portfel, alerty i wykresy – na Linuksa (AppIma
 - **Alerty** – cena powyżej/poniżej poziomu albo zmiana o zadany procent w 24 h; powiadomienia systemowe, alerty jednorazowe i powtarzalne.
 - **Wykresy** – 24 h, 7 dni, 30 dni, 90 dni, 1 rok, z celownikiem pod kursorem; lista obserwowanych i ranking Top 100.
 - **Linux** – okno w stylu macOS z przyciskami po prawej (minimalizuj, maksymalizuj, zamknij); zamknięcie okna chowa aplikację do zasobnika (lub minimalizuje na pasek zadań – do wyboru w Ustawieniach).
+- **Autostart** (Linux) – domyślnie aplikacja uruchamia się razem z systemem (wpis `~/.config/autostart/cointracko.desktop`), od razu pobiera notowania i czeka w zasobniku; w Ustawieniach można to wyłączyć albo zostawić widoczne okno. Działa z AppImage i z paczką `.deb`.
 
 Źródło notowań: [CoinGecko](https://www.coingecko.com) (publiczne API, klucz niewymagany).
 

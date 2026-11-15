@@ -1151,6 +1151,8 @@ function settingsGeneral() {
         { value: 'minimize', label: 'minimalizuje okno na pasek zadań' },
         { value: 'quit', label: 'kończy aplikację' }
       ], s.window.closeAction, (v) => saveSettings({ window: { closeAction: v } }, true)), { icon: 'eye', color: 'var(--indigo)', hint: 'Schowaną aplikację otworzysz ikoną w zasobniku lub uruchamiając ją ponownie; zakończysz z menu ikony.' }),
+      row('Uruchamiaj z systemem', toggle(!!s.window.autostart, async (v) => { await saveSettings({ window: { autostart: v } }, true); render(true); }), { icon: 'power', color: 'var(--green)', hint: 'Aplikacja wczytuje się po zalogowaniu do systemu i od razu pobiera notowania oraz pilnuje alertów.' }),
+      s.window.autostart ? row('Start w tle', toggle(s.window.startHidden !== false, (v) => saveSettings({ window: { startHidden: v } }, true)), { icon: 'eye', color: 'var(--indigo)', hint: 'Po uruchomieniu z systemem okno nie wyskakuje – aplikacja czeka w zasobniku (bez zasobnika: na pasku zadań).' }) : null,
       row('Wygląd', segmented([{ value: 'system', label: 'Systemowy' }, { value: 'light', label: 'Jasny' }, { value: 'dark', label: 'Ciemny' }], s.ui.theme, (v) => saveSettings({ ui: { theme: v } }, true)), { icon: 'moon', color: 'var(--purple)' })
     ], state.info.hasTray ? null : 'Na tym systemie nie udało się utworzyć ikony w zasobniku – okno będzie minimalizowane na pasek zadań.') : null,
     platform.desktop ? browserGroup() : null,

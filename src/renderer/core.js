@@ -15,7 +15,7 @@
   const DEFAULT_SETTINGS = {
     ui: { theme: 'system' }, // 'system' | 'light' | 'dark'
     market: { currency: 'usd', refreshSec: 60, cgKey: '' },
-    window: { closeAction: 'tray' }, // 'tray' – chowaj do zasobnika, 'minimize' – minimalizuj na pasek zadań, 'quit' – zakończ
+    window: { closeAction: 'tray', autostart: true, startHidden: true }, // closeAction: 'tray' – chowaj do zasobnika, 'minimize' – minimalizuj na pasek zadań, 'quit' – zakończ; autostart: uruchamiaj z systemem (okno schowane, gdy startHidden)
     alerts: { notifications: true },
     browser: { enabled: false, port: 47820 } // podgląd w przeglądarce (tylko komputer): http://127.0.0.1:port
   };

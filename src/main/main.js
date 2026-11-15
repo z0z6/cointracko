@@ -5,6 +5,7 @@ const fs = require('fs');
 
 const { Store } = require('./store');
 const { BrowserServer } = require('./web-server');
+const autostart = require('./autostart');
 
 const APP_NAME = 'CoinTracko';
 app.setName(APP_NAME);
@@ -60,7 +61,11 @@ function createWindow() {
   win.setMenuBarVisibility(false);
   if (process.env.COINTRACKO_SIZE) { const [w, hh] = process.env.COINTRACKO_SIZE.split('x').map(Number); win.setSize(w, hh); }
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  win.once('ready-to-show', () => { if (!process.argv.includes('--hidden')) win.show(); });
+  win.once('ready-to-show', () => {
+    if (!process.argv.includes('--hidden')) { win.show(); return; }
+    // start z systemem: okno zostaje schowane w zasobniku; bez zasobnika minimalizujemy je na pasek zadań
+    if (!tray) { win.showInactive(); win.minimize(); }
+  });
   if (process.env.COINTRACKO_SHOTS) {
     win.webContents.on('console-message', (...a) => { const e = a[0]; console.log('[renderer]', e && e.message ? e.message : a.slice(1).join(' ')); });
     win.webContents.once('did-finish-load', () => devScreenshots(process.env.COINTRACKO_SHOTS));
@@ -164,6 +169,7 @@ function registerIpc() {
     const s = store.updateSettings(patch);
     if (patch && patch.ui && patch.ui.theme) nativeTheme.themeSource = patch.ui.theme;
     if (patch && patch.browser) server.apply(s.browser);
+    if (patch && patch.window && ('autostart' in patch.window || 'startHidden' in patch.window)) autostart.apply(app, s.window);
     return s;
   });
   handle('data:set', (data) => store.setData(data));
@@ -207,6 +213,8 @@ app.whenReady().then(() => {
     version: app.getVersion()
   });
   server.apply(store.settings.browser);
+  // wpis autostartu odświeżamy przy każdym starcie (np. po przeniesieniu pliku AppImage w inne miejsce)
+  try { if (store.settings.window.autostart) autostart.apply(app, store.settings.window); } catch (_) { /* tryb deweloperski */ }
   createTray();
   registerIpc();
   createWindow();
