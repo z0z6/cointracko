@@ -12,10 +12,11 @@
     "vendor": "node scripts/vendor.js",
     "start": "electron .",
     "test": "node test/run-tests.js",
-    "dist:linux": "electron-builder --linux AppImage --publish never",
+    "dist:linux": "electron-builder --linux AppImage deb --publish never",
     "build:web": "node scripts/build-web.js",
     "android:sync": "node scripts/build-web.js && cap sync android",
-    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug"
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "dist:deb": "electron-builder --linux deb --publish never"
   },
   "devDependencies": {
     "@capacitor/android": "^8.0.0",
@@ -45,13 +46,20 @@
     "afterPack": "build/afterPack.js",
     "linux": {
       "target": [
-        "AppImage"
+        "AppImage",
+        "deb"
       ],
       "executableName": "cointracko",
       "icon": "build/icon.png",
       "category": "Finance",
       "synopsis": "Notowania kryptowalut, portfel i alerty",
-      "syncDesktopName": true
+      "syncDesktopName": true,
+      "maintainer": "z0z6 <z0z6@users.noreply.github.com>"
+    },
+    "deb": {
+      "artifactName": "CoinTracko-${version}-linux-amd64.deb",
+      "packageCategory": "finance",
+      "priority": "optional"
     }
   },
   "desktopName": "cointracko.desktop"
