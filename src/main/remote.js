@@ -48,7 +48,7 @@ class Remote {
     }
   }
 
-  // req: { url, method?, body?, as?: 'json'|'text', ttl?: ms, key?: klucz CoinGecko }
+  // req: { url, method?, body?, as?: 'json'|'text', ttl?: ms, fresh?: bool, key?: klucz CoinGecko }
   async request(req) {
     const method = String(req.method || 'GET').toUpperCase();
     const body = req.body == null ? undefined : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
@@ -57,7 +57,7 @@ class Remote {
     const ttl = Math.min(MAX_TTL, Math.max(0, req.ttl == null ? DEFAULT_TTL : Number(req.ttl) || 0));
     const id = `${method} ${req.url} ${body || ''} ${as}`;
     const hit = this.cache.get(id);
-    if (hit && this.now() - hit.at < hit.ttl) return hit.value;
+    if (!req.fresh && hit && this.now() - hit.at < hit.ttl) return hit.value; // fresh: pomiń pamięć podręczną (wymuszona aktualizacja)
     if (this.inflight.has(id)) return this.inflight.get(id);
     const p = this._do(req, method, body, as).then((value) => {
       if (value.status === 200 && ttl > 0) this._store(id, value, ttl);

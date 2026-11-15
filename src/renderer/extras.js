@@ -222,7 +222,7 @@ async function refreshNews(manual) {
   const st = state.news;
   if (st.loading || !state.settings.intel || state.settings.intel.enabled === false) return;
   st.loading = true;
-  if (state.view === 'news') softRender();
+  if (state.view === 'alerts') softRender();
   try {
     const coins = intelCoins();
     if (!coins.length) { st.items = {}; st.at = Date.now(); return; }
@@ -235,7 +235,7 @@ async function refreshNews(manual) {
   } finally {
     st.loading = false;
     renderSidebar();
-    if (state.view === 'news' || state.view === 'dashboard') softRender();
+    if (state.view === 'alerts' || state.view === 'dashboard') softRender();
   }
 }
 
@@ -289,26 +289,26 @@ function viewNews() {
   const st = state.news;
   const set = state.settings.intel || { enabled: true };
   const page = h('div', { class: 'page' }, offlineBanner());
-  const head = h('div', { class: 'toolbar' }, h('h1', null, 'Wiadomości'), h('div', { class: 'spacer' }),
+  const head = h('div', { class: 'toolbar' }, h('h1', null, 'Alerty'), h('div', { class: 'spacer' }),
     st.at ? h('span', { class: 'muted', style: { marginRight: '8px' } }, 'Zaktualizowano ' + ago(st.at)) : null,
     h('button', { class: 'btn', disabled: st.loading || set.enabled === false, onclick: () => refreshNews(true) }, st.loading ? spinner(13) : iconEl('refresh', 14), st.loading ? 'Szukam…' : 'Szukaj teraz'));
   if (set.enabled === false) {
-    page.append(h('div', { class: 'card onboard' }, h('div', { class: 'ob-ic', html: icon('news', 30) }), h('h2', null, 'Wyszukiwanie wiadomości jest wyłączone'),
+    page.append(h('div', { class: 'card onboard' }, h('div', { class: 'ob-ic', html: icon('news', 30) }), h('h2', null, 'Wyszukiwanie alertów jest wyłączone'),
       h('p', null, 'Aplikacja może sprawdzać w internecie wiadomości o aktywach z portfela i ostrzegać o anomaliach: włamaniach, nadużyciach, problemach z płynnością czy siecią.'),
       h('div', { class: 'acts' }, h('button', { class: 'btn primary lg', onclick: async () => { await saveSettings({ intel: { enabled: true } }, true); refreshNews(true); render(); } }, 'Włącz'))));
     return h('div', null, head, page);
   }
   if (!intelCoins().length) {
-    page.append(h('div', { class: 'card onboard' }, h('div', { class: 'ob-ic', html: icon('news', 30) }), h('h2', null, 'Dodaj aktywa, aby śledzić wiadomości'),
-      h('p', null, 'Wiadomości są szukane dla kryptowalut z portfela i listy obserwowanych.'),
-      h('div', { class: 'acts' }, h('button', { class: 'btn primary lg', onclick: () => go('portfolio') }, 'Przejdź do portfela'))));
+    page.append(h('div', { class: 'card onboard' }, h('div', { class: 'ob-ic', html: icon('news', 30) }), h('h2', null, 'Dodaj aktywa, aby śledzić alerty'),
+      h('p', null, 'Wiadomości, sygnały i ostrzeżenia są szukane dla kryptowalut z Twoich aktywów i listy obserwowanych.'),
+      h('div', { class: 'acts' }, h('button', { class: 'btn primary lg', onclick: () => go('dashboard') }, 'Przejdź do pulpitu'))));
     return h('div', null, head, page);
   }
   if (!st.at && !st.loading) setTimeout(() => refreshNews(), 0);
 
   // anomalie
   const anomalies = anomalyList();
-  const aCard = h('div', { class: 'card card-pad' }, h('div', { class: 'card-title' }, iconEl('warn', 16), 'Wykryte anomalie', h('div', { class: 'spacer' }), anomalies.length ? h('span', { class: 'chip ' + sevClass(anomalies[0].severity) }, anomalies.length) : null));
+  const aCard = h('div', { class: 'card card-pad' }, h('div', { class: 'card-title' }, iconEl('warn', 16), 'Ostrzeżenia i anomalie', h('div', { class: 'spacer' }), anomalies.length ? h('span', { class: 'chip ' + sevClass(anomalies[0].severity) }, anomalies.length) : null));
   if (!anomalies.length) aCard.append(h('div', { class: 'muted' }, st.at ? 'Nie wykryto niepokojących sygnałów w nagłówkach ani w danych rynkowych.' : 'Szukam…'));
   else aCard.append(h('div', { class: 'facts' }, anomalies.slice(0, 12).map((a) => {
     const c = coinInfo(a.coinId);
@@ -320,7 +320,7 @@ function viewNews() {
 
   // ton wiadomości
   const sentRows = intelCoins().map((c) => ({ c, s: Intel.sentiment(st.items[c.id] || []) })).filter((x) => (st.items[x.c.id] || []).length);
-  const sCard = h('div', { class: 'card card-pad' }, h('div', { class: 'card-title' }, iconEl('chart', 16), 'Ton wiadomości (7 dni)'));
+  const sCard = h('div', { class: 'card card-pad' }, h('div', { class: 'card-title' }, iconEl('chart', 16), 'Sygnały – ton wiadomości (7 dni)'));
   if (!sentRows.length) sCard.append(h('div', { class: 'muted' }, st.at ? 'Brak świeżych wiadomości o Twoich aktywach.' : 'Szukam…'));
   else sCard.append(h('div', { class: 'facts' }, sentRows.map(({ c, s }) => h('div', { class: 'fact click', onclick: () => { st.coin = c.id; render(true); } },
     coinIcon(c, 'sm'), h('div', { class: 'grow' }, h('div', { class: 'f-k' }, c.name), h('div', { class: 'row-hint' }, s.label)),
@@ -331,12 +331,234 @@ function viewNews() {
   const all = Object.values(st.items).flat().filter((i) => !st.coin || i.coinId === st.coin).sort((a, b) => b.ts - a.ts);
   const filters = [{ value: 'all', label: 'Wszystkie' }, { value: 'bullish', label: 'Pozytywne' }, { value: 'bearish', label: 'Negatywne' }, { value: 'anomaly', label: 'Anomalie' }];
   const shown = all.filter((i) => st.filter === 'all' || (st.filter === 'anomaly' ? i.anomaly : i.tone === st.filter)).slice(0, 80);
-  page.append(h('div', { class: 'section-head' }, h('h2', null, 'Doniesienia'), h('div', { class: 'spacer' }),
+  page.append(h('div', { class: 'section-head' }, h('h2', null, 'Wiadomości'), h('div', { class: 'spacer' }),
     select([{ value: '', label: 'Wszystkie aktywa' }, ...intelCoins().map((c) => ({ value: c.id, label: c.name }))], st.coin, (v) => { st.coin = v; render(true); }),
     segmented(filters, st.filter, (v) => { st.filter = v; render(true); })));
   page.append(h('div', { class: 'card' }, shown.length ? shown.map(newsItemEl) : h('div', { class: 'muted', style: { padding: '18px' } }, st.loading ? 'Szukam wiadomości…' : 'Brak doniesień w tej kategorii.')));
   page.append(h('p', { class: 'group-footer' }, `Źródła: Google News oraz kanały CoinDesk, Cointelegraph, Decrypt i The Block${st.feeds != null && st.feeds < 4 ? ` (dostępnych teraz: ${st.feeds}/4)` : ''}. Ton (bullish/bearish) i anomalie są ustalane automatycznie po słowach kluczowych w nagłówkach — to pomoc w przeglądzie, nie ocena prawdziwości ani porada inwestycyjna. Plotki oznaczone jako „niepotwierdzone” zweryfikuj w oryginalnym źródle; sygnał rośnie, gdy ten sam temat podaje wiele niezależnych serwisów.`));
   return h('div', null, head, page);
+}
+
+
+// ───────────────────────── kalkulator ─────────────────────────
+// Przelicza ilość kryptowaluty na PLN/USD/EUR lub inną kryptowalutę – w obie strony (wpisz dowolną stronę).
+// Tryb „Kurs z dnia” pokazuje, ile dana ilość kosztowała w wybranym dniu (cena zamknięcia dnia UTC, historia do 6 lat i starsza).
+const CALC_FIAT = [{ id: 'pln', label: 'PLN – złoty' }, { id: 'usd', label: 'USD – dolar' }, { id: 'eur', label: 'EUR – euro' }];
+const calcKey = (a) => (a.k === 'fiat' ? 'f:' : 'c:') + a.id;
+let calcToken = 0;
+
+function calcInit() {
+  if (state.calc) return state.calc;
+  const first = Object.keys(state.data.holdings)[0] || (state.data.watch[0] && state.data.watch[0].id) || 'bitcoin';
+  state.calc = { from: { k: 'coin', id: first }, to: { k: 'fiat', id: 'pln' }, fromAmt: '1', toAmt: '', driver: 'from', mode: 'now', date: Core.sameDayYearsAgo(1), extra: [] };
+  return state.calc;
+}
+
+function calcCoinList() {
+  const c = calcInit();
+  const ids = [];
+  for (const id of [...Object.keys(state.data.holdings), ...state.data.watch.map((w) => w.id), ...c.extra, c.from.k === 'coin' ? c.from.id : null, c.to.k === 'coin' ? c.to.id : null]) if (id && !ids.includes(id)) ids.push(id);
+  return ids.map((id) => coinInfo(id));
+}
+
+// Cena 1 jednostki w walucie bazowej `pivot` ('pln' | 'usd' | 'eur'); dla dnia `iso` – cena zamknięcia z historii.
+async function calcUnit(asset, pivot, iso) {
+  if (asset.k === 'fiat') {
+    if (asset.id === pivot) return { price: 1 };
+    const r = state.rates;
+    if (!r || !r[pivot] || !r[asset.id]) throw new Error('Brak kursów walut – spróbuj ponownie za chwilę.');
+    return { price: r[pivot] / r[asset.id] };
+  }
+  if (iso) {
+    const r = await Svc.history.priceOn(coinInfo(asset.id), pivot, iso);
+    return { price: r.price, approx: r.approx, source: r.source, date: r.date };
+  }
+  let q = state.market[asset.id];
+  if (!q || !isFinite(q.price)) {
+    const got = await Market.quotes([asset.id], cur());
+    for (const x of got) state.market[x.id] = x;
+    q = state.market[asset.id];
+  }
+  if (!q || !isFinite(q.price)) throw new Error('Brak aktualnej ceny tej kryptowaluty.');
+  if (pivot === cur()) return { price: q.price };
+  const r = state.rates;
+  if (!r || !r[pivot] || !r[cur()]) throw new Error('Brak kursów walut – spróbuj ponownie za chwilę.');
+  return { price: q.price * r[pivot] / r[cur()] };
+}
+
+function calcFmt(v, asset) {
+  if (!isFinite(v)) return '';
+  const digits = asset.k === 'fiat' ? 2 : Math.abs(v) >= 1000 ? 2 : Math.abs(v) >= 1 ? 6 : 10;
+  return v.toLocaleString('pl-PL', { useGrouping: false, maximumFractionDigits: digits });
+}
+
+function viewCalc() {
+  const c = calcInit();
+  const assetOptions = () => [
+    ...CALC_FIAT.map((f) => ({ value: 'f:' + f.id, label: f.label })),
+    ...calcCoinList().map((x) => ({ value: 'c:' + x.id, label: `${x.name}${x.symbol ? ' (' + String(x.symbol).toUpperCase() + ')' : ''}` })),
+    { value: '__pick', label: 'Inna kryptowaluta…' }
+  ];
+  const parseKey = (v) => (v.startsWith('f:') ? { k: 'fiat', id: v.slice(2) } : { k: 'coin', id: v.slice(2) });
+  const label = (a) => (a.k === 'fiat' ? a.id.toUpperCase() : String(coinInfo(a.id).symbol || a.id).toUpperCase());
+
+  const info = h('div', { class: 'calc-info' });
+  const fromIn = h('input', { class: 'input calc-num', inputmode: 'decimal', value: c.fromAmt, 'aria-label': 'Ilość', placeholder: '0', oninput: (e) => { c.fromAmt = e.target.value; c.driver = 'from'; recalc(); } });
+  const toIn = h('input', { class: 'input calc-num', inputmode: 'decimal', value: c.toAmt, 'aria-label': 'Wynik', placeholder: '0', oninput: (e) => { c.toAmt = e.target.value; c.driver = 'to'; recalc(); } });
+
+  const assetSelect = (side) => {
+    const sel = select(assetOptions(), calcKey(c[side]), (v) => {
+      if (v === '__pick') { sel.value = calcKey(c[side]); pickCoin({ title: 'Wybierz kryptowalutę', onPick: (coin) => { addCalcCoin(coin); c[side] = { k: 'coin', id: coin.id }; render(true); } }); return; }
+      c[side] = parseKey(v);
+      if (c.from.k === 'fiat' && c.to.k === 'fiat' && c.from.id === c.to.id) c[side === 'from' ? 'to' : 'from'] = { k: 'coin', id: calcCoinList()[0].id };
+      render(true);
+    }, { 'aria-label': side === 'from' ? 'Przelicz z' : 'Przelicz na' });
+    return sel;
+  };
+  const addCalcCoin = (coin) => {
+    if (!state.data.watch.some((w) => w.id === coin.id) && !c.extra.includes(coin.id)) c.extra.push(coin.id);
+    state.market[coin.id] = state.market[coin.id] || { id: coin.id, name: coin.name, symbol: coin.symbol, image: coin.image };
+  };
+
+  const dateRow = h('div', { class: 'calc-date' });
+  if (c.mode === 'date') {
+    dateRow.append(
+      h('input', { class: 'input', type: 'date', max: todayIso(), value: c.date, 'aria-label': 'Data', onchange: (e) => { if (e.target.value) { c.date = e.target.value; recalc(); } } }),
+      h('div', { class: 'calc-quick' }, [1, 2, 3, 5, 6].map((y) => h('button', { class: 'btn sm' + (c.date === Core.sameDayYearsAgo(y) ? ' primary' : ''), onclick: () => { c.date = Core.sameDayYearsAgo(y); render(true); } }, y === 1 ? '1 rok temu' : y < 5 ? `${y} lata temu` : `${y} lat temu`))));
+  }
+
+  async function recalc() {
+    const my = ++calcToken;
+    const useDate = c.mode === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(c.date);
+    if (c.from.k === 'fiat' && c.to.k === 'fiat') { /* tylko kursy bieżące */ }
+    const pivot = c.from.k === 'fiat' ? c.from.id : c.to.k === 'fiat' ? c.to.id : cur();
+    const dated = useDate && !(c.from.k === 'fiat' && c.to.k === 'fiat');
+    info.replaceChildren(h('div', { class: 'analyzing' }, spinner(14), dated ? 'Pobieram cenę z wybranego dnia…' : 'Przeliczam…'));
+    try {
+      if (!state.rates && (pivot !== cur() || (c.from.k === 'fiat' && c.to.k === 'fiat') || c.from.k === 'fiat' || c.to.k === 'fiat')) { try { state.rates = await Market.rates(); } catch (_) { /* błąd zgłosi calcUnit */ } }
+      const iso = dated ? c.date : null;
+      const [uf, ut] = await Promise.all([calcUnit(c.from, pivot, iso), calcUnit(c.to, pivot, iso)]);
+      if (my !== calcToken) return;
+      const driverFrom = c.driver !== 'to';
+      const amt = Core.parseAmount(driverFrom ? c.fromAmt : c.toAmt);
+      const out = isFinite(amt) ? Core.convertAmount(amt, uf.price, ut.price, !driverFrom) : NaN;
+      if (driverFrom) { c.toAmt = calcFmt(out, c.to); toIn.value = c.toAmt; } else { c.fromAmt = calcFmt(out, c.from); fromIn.value = c.fromAmt; }
+      const rate = Core.convertAmount(1, uf.price, ut.price);
+      const bits = [h('div', { class: 'calc-rate' }, `1 ${label(c.from)} = `, h('b', null, `${calcFmt(rate, c.to)} ${label(c.to)}`), dated ? ` (${dateStr(c.date)})` : '')];
+      if (dated) {
+        const approx = uf.approx || ut.approx;
+        const src = uf.source || ut.source;
+        bits.push(h('div', { class: 'row-hint' }, `Cena zamknięcia dnia (UTC)${src ? ' · ' + (Oracles.SOURCES[src] ? Oracles.SOURCES[src].label : src) : ''}${approx ? ' · wartość przybliżona (zapasowe źródło danych)' : ''}.`));
+        // porównanie z dniem dzisiejszym
+        try {
+          const [nf, nt] = await Promise.all([calcUnit(c.from, pivot, null), calcUnit(c.to, pivot, null)]);
+          if (my !== calcToken) return;
+          const fromAmount = Core.parseAmount(c.fromAmt);
+          if (isFinite(fromAmount) && fromAmount > 0 && isFinite(out)) {
+            const nowOut = Core.convertAmount(fromAmount, nf.price, nt.price);
+            const diff = (nowOut / Core.parseAmount(c.toAmt) - 1) * 100;
+            if (isFinite(diff)) bits.push(h('div', { class: 'calc-today' }, 'Dziś ta sama ilość to ', h('b', null, `${calcFmt(nowOut, c.to)} ${label(c.to)}`), ' ', h('span', { class: 'chip ' + (diff >= 0 ? 'green' : 'red') }, Core.fmtPct(diff, 1))));
+          }
+        } catch (_) { /* porównanie jest dodatkiem */ }
+      } else {
+        bits.push(h('div', { class: 'row-hint' }, c.from.k === 'fiat' && c.to.k === 'fiat' ? 'Kursy walut z Coinbase.' : 'Aktualne ceny z wielu źródeł (patrz Ustawienia → Źródła cen).'));
+      }
+      info.replaceChildren(...bits);
+    } catch (e) {
+      if (my !== calcToken) return;
+      info.replaceChildren(h('div', { class: 'calc-err' }, iconEl('warn', 15), e.message || String(e)));
+    }
+  }
+
+  setTimeout(recalc, 0);
+  state.onQuotes = () => { renderSidebar(); if (c.mode === 'now' && !(document.activeElement && document.activeElement.closest('.calc-card'))) recalc(); };
+
+  const swap = () => { const t = c.from; c.from = c.to; c.to = t; const a = c.fromAmt; c.fromAmt = c.toAmt; c.toAmt = a; c.driver = c.driver === 'to' ? 'from' : 'to'; render(true); };
+
+  return h('div', null,
+    h('div', { class: 'toolbar' }, h('h1', null, 'Kalkulator')),
+    h('div', { class: 'page' }, offlineBanner(),
+      h('div', { class: 'card card-pad calc-card' },
+        h('div', { class: 'calc-line' }, h('div', { class: 'field' }, h('label', null, 'Mam'), fromIn), h('div', { class: 'field calc-asset' }, h('label', null, 'Jednostka'), assetSelect('from'))),
+        h('div', { class: 'calc-swap' }, h('button', { class: 'icon-btn', title: 'Zamień strony', 'aria-label': 'Zamień strony', onclick: swap, html: icon('swap', 18) })),
+        h('div', { class: 'calc-line' }, h('div', { class: 'field' }, h('label', null, 'Otrzymam'), toIn), h('div', { class: 'field calc-asset' }, h('label', null, 'Jednostka'), assetSelect('to'))),
+        h('div', { class: 'calc-mode' }, segmented([{ value: 'now', label: 'Kurs aktualny' }, { value: 'date', label: 'Kurs z dnia' }], c.mode, (v) => { c.mode = v; render(true); })),
+        dateRow,
+        info),
+      h('p', { class: 'group-footer' }, 'Wpisz ilość w dowolnym polu – drugie przeliczy się samo, w obie strony. W trybie „Kurs z dnia” ten sam dzień i miesiąc sprzed lat wybierzesz jednym kliknięciem; używana jest cena zamknięcia dnia (UTC), więc godzina w ciągu doby nie ma znaczenia. Wyceny historyczne mają charakter informacyjny.')));
+}
+
+// ───────────────────────── odświeżanie przeciągnięciem (Android / dotyk) ─────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Wymuszona aktualizacja wszystkiego: notowania (z pominięciem pamięci podręcznej), ceny z oracle, kursy walut, ranking i wiadomości.
+async function forceRefresh() {
+  for (let i = 0; i < 100 && refreshing; i++) await sleep(150); // poczekaj na trwające odświeżanie
+  try { Market.clearCache(); } catch (_) { /* brak pamięci podręcznej */ }
+  Remote.forceFresh(25000); // zapytania z tej aktualizacji omijają pamięć podręczną
+  state.rates = null;
+  state.top = null;
+  state.conn.lastUpdate = 0;
+  const news = (state.settings.intel || {}).enabled === false ? Promise.resolve() : refreshNews(true).catch(() => {});
+  await Promise.all([refresh(true), news]);
+}
+
+function initPullToRefresh() {
+  const content = document.getElementById('content');
+  if (!content || content.dataset.ptr) return;
+  content.dataset.ptr = '1';
+  const el = h('div', { class: 'ptr', 'aria-hidden': 'true', html: icon('refresh', 20) });
+  document.body.appendChild(el);
+  const TRIGGER = 70, MAX = 110;
+  let startY = 0, startX = 0, pull = 0, active = false, busyNow = false;
+
+  const topOffset = () => Math.max(0, content.getBoundingClientRect().top);
+  const reset = () => { el.className = 'ptr'; el.style.transform = ''; active = false; pull = 0; };
+
+  content.addEventListener('touchstart', (e) => {
+    if (busyNow || e.touches.length !== 1 || content.scrollTop > 0 || document.querySelector('.sheet-overlay')) { active = false; return; }
+    const t = e.target;
+    if (t && t.closest && t.closest('input, textarea, select, .chart-card canvas, .chart-box')) { active = false; return; }
+    startY = e.touches[0].clientY; startX = e.touches[0].clientX; pull = 0; active = true;
+    el.style.setProperty('--ptr-top', topOffset() + 'px');
+  }, { passive: true });
+
+  content.addEventListener('touchmove', (e) => {
+    if (!active) return;
+    const dy = e.touches[0].clientY - startY;
+    const dx = Math.abs(e.touches[0].clientX - startX);
+    if (dy <= 0 || content.scrollTop > 0 || dx > dy) { if (pull) reset(); active = dy > 0 && content.scrollTop <= 0 && dx <= dy; return; }
+    if (e.cancelable) e.preventDefault();
+    pull = Math.min(MAX, dy * 0.55);
+    el.className = 'ptr pulling';
+    el.style.transform = `translateY(${topOffset() + pull - 44}px)`;
+    el.firstChild.style.transform = `rotate(${pull * 4}deg)`;
+    el.style.opacity = String(Math.min(1, pull / 40));
+  }, { passive: false });
+
+  const end = async () => {
+    if (!active) return;
+    active = false;
+    el.firstChild.style.transform = '';
+    el.style.opacity = '';
+    if (pull < TRIGGER) { reset(); return; }
+    busyNow = true;
+    el.style.transform = '';
+    el.className = 'ptr loading';
+    if (navigator.vibrate) try { navigator.vibrate(12); } catch (_) { /* brak wibracji */ }
+    const started = Date.now();
+    try {
+      await forceRefresh();
+      if (state.conn.status === 'live') toast('Zaktualizowano wszystkie dane', 'success', 1800);
+    } catch (e) { errToast(e); }
+    await sleep(Math.max(0, 700 - (Date.now() - started))); // krótka animacja nawet przy szybkim łączu
+    el.className = 'ptr done';
+    await sleep(320);
+    reset();
+    busyNow = false;
+  };
+  content.addEventListener('touchend', end, { passive: true });
+  content.addEventListener('touchcancel', () => { if (!busyNow) reset(); }, { passive: true });
 }
 
 // ostrzeżenie na pulpicie
@@ -345,7 +567,7 @@ function anomalyBanner() {
   if (!hi.length) return null;
   const a = hi[0];
   const c = coinInfo(a.coinId);
-  return h('div', { class: 'offline-banner warn-banner', role: 'button', onclick: () => go('news') }, iconEl('warn', 18),
+  return h('div', { class: 'offline-banner warn-banner', role: 'button', onclick: () => go('alerts') }, iconEl('warn', 18),
     h('div', { style: { flex: 1 } }, h('b', null, `${c.name}: ${a.label}`), a.item ? ` — ${a.item.title}` : ` — ${a.detail}`, hi.length > 1 ? ` (+${hi.length - 1} inne)` : ''),
     h('button', { class: 'btn sm' }, 'Szczegóły'));
 }
@@ -365,9 +587,9 @@ function settingsSources() {
       row('Tolerancja zgodności', select([{ value: '1', label: '±1%' }, { value: '2', label: '±2%' }, { value: '3', label: '±3%' }, { value: '5', label: '±5%' }], String(m.tolerancePct || 2), async (v) => { await saveSettings({ market: { tolerancePct: Number(v) } }, true); refresh(true); }), { icon: 'cpu', color: 'var(--orange)', hint: 'Źródło odbiegające od mediany o więcej niż tyle procent jest odrzucane z średniej i oznaczane jako podejrzane.' })
     ], 'Cenę uznajemy za wiarygodną, gdy zgadzają się co najmniej dwa źródła; najwyższa pewność — trzy źródła, w tym dwa oracle.'),
     group('Źródła cen', sourceRows, 'Oracle: Pyth Network, RedStone, Chainlink. Każde włączone źródło to dodatkowe zapytania co odświeżenie; wyłącz te, których nie potrzebujesz.'),
-    group('Wiadomości i anomalie', [
+    group('Alerty: wiadomości, sygnały i ostrzeżenia', [
       row('Wyszukuj wiadomości', toggle(ints.enabled !== false, async (v) => { await saveSettings({ intel: { enabled: v } }, true); if (v) refreshNews(true); render(true); }), { icon: 'news', color: 'var(--indigo)', hint: 'Co 20 minut aplikacja sprawdza nagłówki o aktywach z portfela i ocenia ton oraz anomalie.' }),
-      row('Powiadamiaj o anomaliach', toggle(ints.notify !== false, (v) => saveSettings({ intel: { notify: v } }, true)), { icon: 'bell', color: 'var(--red)', hint: 'Powiadomienie systemowe o nowej, poważnej anomalii (raz na temat).' }),
+      row('Powiadamiaj o anomaliach', toggle(ints.notify !== false, async (v) => { await saveSettings({ intel: { notify: v } }, true); if (v && platform.requestNotifications) platform.requestNotifications(); }), { icon: 'bell', color: 'var(--red)', hint: 'Powiadomienie systemowe o nowej, poważnej anomalii (raz na temat).' }),
       row('Próg powiadomień', select([{ value: '3', label: 'od wagi 3 (podwyższona)' }, { value: '4', label: 'od wagi 4 (wysoka)' }, { value: '5', label: 'tylko waga 5 (krytyczna)' }], String(ints.minSeverity || 4), (v) => saveSettings({ intel: { minSeverity: Number(v) } }, true)), { icon: 'flag', color: 'var(--orange)' })
     ]),
     group('Pamięć podręczna', [

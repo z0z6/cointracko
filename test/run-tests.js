@@ -63,48 +63,6 @@ test('portfolio: pusty portfel', () => {
   assert.strictEqual(p.total, 0);
   assert.strictEqual(p.change24hPct, 0);
 });
-console.log('Alerty');
-test('alert jednorazowy uruchamia się raz i wyłącza', () => {
-  const alerts = [{ id: '1', coinId: 'bitcoin', type: 'above', value: 100, currency: 'usd', active: true, repeat: false }];
-  let r = Core.evaluateAlerts(alerts, { bitcoin: { price: 99, change24h: 0 } }, 'usd');
-  assert.strictEqual(r.fired.length, 0);
-  r = Core.evaluateAlerts(r.alerts, { bitcoin: { price: 101, change24h: 0 } }, 'usd', 1234);
-  assert.strictEqual(r.fired.length, 1);
-  assert.strictEqual(r.alerts[0].active, false);
-  assert.strictEqual(r.alerts[0].lastTriggered, 1234);
-  r = Core.evaluateAlerts(r.alerts, { bitcoin: { price: 150, change24h: 0 } }, 'usd');
-  assert.strictEqual(r.fired.length, 0);
-});
-test('alert powtarzalny uzbraja się ponownie po ustaniu warunku', () => {
-  let alerts = [{ id: '1', coinId: 'bitcoin', type: 'below', value: 100, currency: 'usd', active: true, repeat: true }];
-  let r = Core.evaluateAlerts(alerts, { bitcoin: { price: 90 } }, 'usd');
-  assert.strictEqual(r.fired.length, 1);
-  r = Core.evaluateAlerts(r.alerts, { bitcoin: { price: 80 } }, 'usd');
-  assert.strictEqual(r.fired.length, 0, 'nie powtarza, dopóki warunek trwa');
-  r = Core.evaluateAlerts(r.alerts, { bitcoin: { price: 120 } }, 'usd');
-  assert.strictEqual(r.alerts[0].armed, true);
-  r = Core.evaluateAlerts(r.alerts, { bitcoin: { price: 95 } }, 'usd');
-  assert.strictEqual(r.fired.length, 1);
-  assert.strictEqual(r.alerts[0].active, true);
-});
-test('alert procentowy i inna waluta', () => {
-  const alerts = [
-    { id: '1', coinId: 'eth', type: 'changeDown', value: 5, active: true },
-    { id: '2', coinId: 'eth', type: 'changeUp', value: 5, active: true },
-    { id: '3', coinId: 'eth', type: 'above', value: 1, currency: 'pln', active: true }
-  ];
-  const r = Core.evaluateAlerts(alerts, { eth: { price: 2000, change24h: -6.2 } }, 'usd');
-  assert.deepStrictEqual(r.fired.map((f) => f.alert.id), ['1']);
-  assert.strictEqual(r.alerts[2].active, true, 'alert w PLN nie uruchamia się przy notowaniach w USD');
-  const msg = Core.alertMessage(r.fired[0], { name: 'Ethereum', symbol: 'eth' }, 'usd');
-  assert.ok(/Ethereum \(ETH\)/.test(msg.title) && /6,20%/.test(msg.title));
-});
-test('brak notowań nie uruchamia alertu', () => {
-  const r = Core.evaluateAlerts([{ id: '1', coinId: 'x', type: 'below', value: 5, active: true }], {}, 'usd');
-  assert.strictEqual(r.fired.length, 0);
-  assert.strictEqual(r.changed, false);
-});
-
 console.log('Wpisy pozycji');
 const RATES = { usd: 1, pln: 4, eur: 0.5 };
 test('positionStats: średnia cena, zysk niezrealizowany, część bez ceny', () => {
@@ -141,7 +99,7 @@ test('positionStats: przeliczenie waluty partii i brak ceny', () => {
   near(r.cost, 200); near(r.pnl, 100); near(r.pnlPct, 50);
 });
 test('ilość pozycji to suma wpisów – każdy wpis jest edytowalny', () => {
-  let d = Core.sanitizeData({ watch: [], holdings: {}, lots: {}, alerts: [] });
+  let d = Core.sanitizeData({ watch: [], holdings: {}, lots: {} });
   d = Core.applyLots(d, 'btc', [{ type: 'buy', date: '2025-05-05', amount: 0.5, price: 10, currency: 'usd' }]);
   near(d.holdings.btc, 0.5);
   assert.ok(d.lots.btc[0].id);
@@ -159,7 +117,7 @@ test('ilość pozycji to suma wpisów – każdy wpis jest edytowalny', () => {
   near(Core.lotsBalance([{ type: 'buy', amount: 1 }, { type: 'sell', amount: 3 }]), -2);
   d = Core.applyLots(d, 'btc', []);
   assert.strictEqual(d.holdings.btc, undefined); assert.strictEqual(d.lots.btc, undefined);
-  d = Core.applyLots({ watch: [], holdings: {}, lots: {}, alerts: [] }, 'eth', [{ type: 'buy', amount: 1, price: 1 }, { type: 'sell', amount: 1, price: 2 }]);
+  d = Core.applyLots({ watch: [], holdings: {}, lots: {} }, 'eth', [{ type: 'buy', amount: 1, price: 1 }, { type: 'sell', amount: 1, price: 2 }]);
   assert.strictEqual(d.holdings.eth, undefined);
   assert.strictEqual(d.lots.eth.length, 2, 'historia zamkniętej pozycji zostaje');
 });
@@ -207,13 +165,13 @@ test('allocation, combineHistory, seriesStats', () => {
 
 console.log('Eksport i import');
 test('plik eksportu przenosi portfel między urządzeniami', () => {
-  const data = Core.sanitizeData({ watch: [{ id: 'btc', symbol: 'btc', name: 'Bitcoin' }], holdings: { btc: 2, eth: 1 }, lots: { btc: [{ id: 'x', type: 'buy', date: '2025-01-01', amount: 1.5, price: 100, currency: 'pln' }, { amount: -1 }] }, alerts: [{ id: 'a', coinId: 'btc', type: 'above', value: 5, currency: 'usd', lastTriggered: 5 }], alertLog: [{ at: 1 }] });
+  const data = Core.sanitizeData({ watch: [{ id: 'btc', symbol: 'btc', name: 'Bitcoin' }], holdings: { btc: 2, eth: 1 }, lots: { btc: [{ id: 'x', type: 'buy', date: '2025-01-01', amount: 1.5, price: 100, currency: 'pln' }, { amount: -1 }] } });
   const file = JSON.stringify(Core.buildExport(data, { market: { currency: 'pln' } }, new Date('2026-11-14T10:00:00Z')));
   const imp = Core.parseImport(file);
   assert.deepStrictEqual(imp.data.holdings, { btc: 2, eth: 1 });
   assert.strictEqual(imp.data.lots.btc.length, 2, 'wpis + migrowana reszta ilości');
   assert.strictEqual(imp.currency, 'pln');
-  assert.deepStrictEqual(imp.counts, { holdings: 2, lots: 3, watch: 2, alerts: 1 });
+  assert.deepStrictEqual(imp.counts, { holdings: 2, lots: 3, watch: 2 });
   assert.ok(imp.data.watch.some((w) => w.id === 'eth'), 'posiadana moneta trafia do obserwowanych');
   assert.ok(/^cointracko-portfel-\d{4}-\d{2}-\d{2}\.json$/.test(Core.exportFileName()));
   assert.throws(() => Core.parseImport('{"foo":1}'), /CoinTracko/);
@@ -221,10 +179,10 @@ test('plik eksportu przenosi portfel między urządzeniami', () => {
   assert.throws(() => Core.parseImport(JSON.stringify({ app: 'CoinTracko', format: 99 })), /nowszej/);
 });
 test('mergeImport: zastąp i połącz', () => {
-  const cur = Core.sanitizeData({ watch: [{ id: 'sol' }], holdings: {}, lots: { sol: [{ id: 's1', type: 'buy', amount: 5, price: 1 }], btc: [{ id: 'old', type: 'buy', amount: 1, price: 1 }] }, alerts: [], alertLog: [{ at: 1, title: 't' }] });
+  const cur = Core.sanitizeData({ watch: [{ id: 'sol' }], holdings: {}, lots: { sol: [{ id: 's1', type: 'buy', amount: 5, price: 1 }], btc: [{ id: 'old', type: 'buy', amount: 1, price: 1 }] } });
   const inc = Core.parseImport(JSON.stringify(Core.buildExport(Core.sanitizeData({ watch: [{ id: 'btc' }], lots: { btc: [{ id: 'new', type: 'buy', amount: 3, price: 2 }] } }), {}))).data;
   const rep = Core.mergeImport(cur, inc, 'replace');
-  assert.deepStrictEqual(rep.holdings, { btc: 3 }); assert.strictEqual(rep.alertLog.length, 1);
+  assert.deepStrictEqual(rep.holdings, { btc: 3 });
   const mer = Core.mergeImport(cur, inc, 'merge');
   assert.deepStrictEqual(mer.lots.btc.map((l) => l.id), ['new'], 'wpisy z pliku zastępują obecne dla tej samej monety');
   near(mer.holdings.btc, 3); near(mer.holdings.sol, 5);
@@ -233,9 +191,29 @@ test('mergeImport: zastąp i połącz', () => {
   assert.strictEqual(again.lots.btc.length, 1, 'ponowny import nie dubluje wpisów');
 });
 test('import pliku w starym formacie 1 (ilość „na sztywno”) nadal działa', () => {
-  const old = JSON.stringify({ app: 'CoinTracko', format: 1, watch: [{ id: 'bitcoin' }], holdings: { bitcoin: 1.25 }, lots: {}, alerts: [] });
+  const old = JSON.stringify({ app: 'CoinTracko', format: 1, watch: [{ id: 'bitcoin' }], holdings: { bitcoin: 1.25 }, lots: {} });
   const imp = Core.parseImport(old);
   near(imp.data.holdings.bitcoin, 1.25); assert.strictEqual(imp.data.lots.bitcoin.length, 1);
+});
+
+console.log('Kalkulator i motywy');
+test('convertAmount: w obie strony, błędne dane', () => {
+  near(Core.convertAmount(100, 2.5, 1), 250); // 100 XRP po 2,5 PLN → 250 PLN
+  near(Core.convertAmount(250, 2.5, 1, true), 100); // 250 PLN → 100 XRP
+  near(Core.convertAmount(2, 3000, 60000), 0.1); // 2 ETH → 0,1 BTC
+  assert.ok(isNaN(Core.convertAmount(1, 0, 1)) && isNaN(Core.convertAmount('x', 1, 1)) && isNaN(Core.convertAmount(1, 1, -2)));
+});
+test('sameDayYearsAgo: ten sam dzień i miesiąc, 29 lutego', () => {
+  assert.strictEqual(Core.sameDayYearsAgo(5, new Date(2026, 10, 15)), '2021-11-15');
+  assert.strictEqual(Core.sameDayYearsAgo(1, new Date(2028, 1, 29)), '2027-02-28');
+  assert.strictEqual(Core.sameDayYearsAgo(4, new Date(2028, 1, 29)), '2024-02-29');
+});
+test('7 motywów kolorystycznych w ustawieniach', () => {
+  assert.strictEqual(Core.PALETTES.length, 7);
+  assert.strictEqual(new Set(Core.PALETTES.map((x) => x.id)).size, 7);
+  assert.strictEqual(Core.sanitizeSettings({ ui: { palette: 'rose' } }).ui.palette, 'rose');
+  assert.strictEqual(Core.sanitizeSettings({ ui: { palette: '<x>' } }).ui.palette, 'ocean');
+  assert.strictEqual(Core.DEFAULT_SETTINGS.ui.palette, 'ocean');
 });
 
 console.log('Wykres');
@@ -251,14 +229,14 @@ test('niceTicks i downsample', () => {
 });
 
 console.log('Bezpieczeństwo danych');
-test('sanitizeData: prototyp, identyfikatory, obrazy, limity, pola alertów', () => {
-  const evil = JSON.parse('{"watch":[{"id":"__proto__","name":"x"},{"id":"bitcoin","symbol":"btc","name":"B","image":"javascript:alert(1)"},{"id":"eth","image":"https://evil.example/a.png"},{"id":"ok","image":"https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png?1696"}],"lots":{"__proto__":[{"amount":1}],"bitcoin":[{"amount":1,"price":5}],"BAD ID":[{"amount":1}]},"holdings":{"constructor":5,"<script>":3},"alerts":[{"coinId":"bitcoin","type":"above","value":1,"evil":"x","__proto__":{"p":1}}],"alertLog":[{"title":"t","body":"b","x":{"deep":1}},5],"hints":{"seeded":true,"junk":1}}');
+test('sanitizeData: prototyp, identyfikatory, obrazy, limity, bez alertów', () => {
+  const evil = JSON.parse('{"watch":[{"id":"__proto__","name":"x"},{"id":"bitcoin","symbol":"btc","name":"B","image":"javascript:alert(1)"},{"id":"eth","image":"https://evil.example/a.png"},{"id":"ok","image":"https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png?1696"}],"lots":{"__proto__":[{"amount":1}],"bitcoin":[{"amount":1,"price":5}],"BAD ID":[{"amount":1}]},"holdings":{"constructor":5,"<script>":3},"hints":{"seeded":true,"junk":1}}');
   const d = Core.sanitizeData(evil);
   assert.deepStrictEqual(d.watch.map((w) => w.id), ['bitcoin', 'eth', 'ok']);
   assert.deepStrictEqual(d.watch.map((w) => w.image), ['', '', 'https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png?1696'], 'tylko obrazy z CoinGecko');
   assert.deepStrictEqual(Object.keys(d.lots), ['bitcoin']); assert.strictEqual(Object.getPrototypeOf(d.lots), Object.prototype);
   assert.deepStrictEqual(Object.keys(d.holdings), ['bitcoin']);
-  assert.ok(!('evil' in (d.alerts[0] || {})) && !('p' in d.alerts[0]), 'pola alertu z białej listy'); assert.deepStrictEqual(Object.keys(d.alertLog[0]).sort(), ['at', 'body', 'coinId', 'title']);
+  assert.deepStrictEqual(Object.keys(d).sort(), ['hints', 'holdings', 'lots', 'watch'], 'brak alertów w modelu danych');
   assert.deepStrictEqual(d.hints, { seeded: true });
   const big = Core.sanitizeData({ watch: Array.from({ length: 2000 }, (_, i) => ({ id: 'c' + i })), lots: { bitcoin: Array.from({ length: 9000 }, () => ({ amount: 1 })) } });
   assert.strictEqual(big.watch.length, 500); assert.strictEqual(big.lots.bitcoin.length, 5000);
@@ -280,7 +258,7 @@ test('Store: zapis, odczyt, scalanie ustawień, odporność na uszkodzony plik',
   let s = new Store(dir);
   assert.strictEqual(s.settings.market.currency, 'usd');
   s.updateSettings({ market: { currency: 'pln' } });
-  s.setData({ watch: [{ id: 'bitcoin', symbol: 'btc', name: 'Bitcoin' }, { id: 'bitcoin' }, { nope: 1 }], holdings: { bitcoin: '0.5', zero: 0, bad: 'x' }, alerts: [{ coinId: 'bitcoin', type: 'above', value: '10' }, { coinId: 'x', type: 'zly', value: 1 }] });
+  s.setData({ watch: [{ id: 'bitcoin', symbol: 'btc', name: 'Bitcoin' }, { id: 'bitcoin' }, { nope: 1 }], holdings: { bitcoin: '0.5', zero: 0, bad: 'x' } });
   assert.strictEqual(s.rev, 3, 'licznik zmian rośnie przy każdym zapisie');
   s = new Store(dir);
   assert.strictEqual(s.settings.market.currency, 'pln');
@@ -288,8 +266,6 @@ test('Store: zapis, odczyt, scalanie ustawień, odporność na uszkodzony plik',
   assert.strictEqual(s.data.watch.length, 1);
   assert.deepStrictEqual(s.data.holdings, { bitcoin: 0.5 });
   assert.strictEqual(s.data.lots.bitcoin.length, 1, 'ilość zapisana na sztywno stała się wpisem');
-  assert.strictEqual(s.data.alerts.length, 1);
-  assert.strictEqual(s.data.alerts[0].value, 10);
   fs.writeFileSync(path.join(dir, 'cointracko-dane.json'), '{zepsute');
   s = new Store(dir);
   assert.deepStrictEqual(s.data.watch, []);
@@ -345,6 +321,8 @@ const remoteTest = async () => {
   assert.deepStrictEqual((await r.request({ url, key: 'K1' })).data, { a: 1 });
   await r.request({ url, key: 'K1' }); assert.strictEqual(calls, 1, 'pamięć podręczna');
   assert.strictEqual(lastInit.headers['x-cg-demo-api-key'], 'K1');
+  await r.request({ url, key: 'K1', fresh: true }); assert.strictEqual(calls, 2, 'fresh: wymuszona aktualizacja omija pamięć podręczną');
+  calls = 1;
   await assert.rejects(() => r.request({ url: 'https://example.com/' }), /Niedozwolony/);
   await r.request({ url: 'https://api.coinbase.com/v2/exchange-rates?currency=USD', key: 'SECRET' });
   assert.strictEqual(lastInit.headers['x-cg-demo-api-key'], undefined, 'klucz CoinGecko nie wycieka do innych serwisów');
@@ -463,6 +441,15 @@ const historyFetchTest = async () => {
   for (let i = 1; i < first.points.length; i++) assert.ok(first.points[i][0] > first.points[i - 1][0], 'rosnąco i bez duplikatów');
   const n = calls.length; await hist.daily({ id: 'bitcoin', symbol: 'btc' }, 'usd', 6);
   assert.strictEqual(calls.length, n, 'drugi raz z pamięci podręcznej');
+  // cena z konkretnej daty: 5 lat temu (z historii), 8 lat temu (pojedyncze zapytanie), przyszłość i brak danych
+  const dIso = (t) => new Date(t).toISOString().slice(0, 10);
+  const five = await hist.priceOn({ id: 'bitcoin', symbol: 'btc' }, 'usd', dIso(today - 5 * 365 * D));
+  assert.strictEqual(five.date, today - 5 * 365 * D); near(five.price, first.points.find((p) => p[0] === five.date)[1], 'cena z dnia sprzed 5 lat zgodna z historią');
+  const before = calls.length;
+  const eight = await hist.priceOn({ id: 'bitcoin', symbol: 'btc' }, 'usd', dIso(today - 8 * 365 * D));
+  assert.strictEqual(eight.date, today - 8 * 365 * D); assert.strictEqual(calls.length, before + 1, 'starsza data: jedno zapytanie o pojedynczy dzień');
+  await assert.rejects(() => hist.priceOn({ id: 'bitcoin', symbol: 'btc' }, 'usd', dIso(today + 3 * D)), /przyszłości/);
+  await assert.rejects(() => hist.priceOn({ id: 'bitcoin', symbol: 'btc' }, 'usd', 'wczoraj'), /data/i);
   // zapas: Binance przy awarii CryptoCompare
   const flaky = PriceHistory.create({ cache: KVCache.create(null), remote: { json: async (url) => {
     if (url.includes('cryptocompare')) throw new Error('down');

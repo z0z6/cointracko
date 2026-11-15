@@ -95,25 +95,21 @@
     return (data.prices || []).filter((p) => Array.isArray(p) && isFinite(p[1]));
   }
 
-  // Kursy walut względem USD (z ceny bitcoina w trzech walutach) – do przeliczania cen zakupu.
+  // Kursy walut względem USD. Główne źródło: kursy walut z Coinbase; zapas: kursy wyliczone z ceny bitcoina w CoinGecko.
   async function rates() {
+    try {
+      const r = (await Remote.json('https://api.coinbase.com/v2/exchange-rates?currency=USD', { ttl: 10 * 60000 })).data.rates;
+      const pln = Number(r.PLN); const eur = Number(r.EUR);
+      if (pln > 0 && eur > 0) return { usd: 1, pln, eur };
+    } catch (_) { /* zapas poniżej */ }
     const data = await getJson('/simple/price', { ids: 'bitcoin', vs_currencies: 'usd,pln,eur' }, { ttl: 10 * 60000 });
     const b = data.bitcoin || {};
     if (!(b.usd > 0)) throw new MarketError('Nie udało się pobrać kursów walut.', 'http');
     return { usd: 1, pln: b.pln / b.usd, eur: b.eur / b.usd };
   }
 
-  // Cena monety w wybranym dniu (date: 'RRRR-MM-DD'). Publiczne API udostępnia ostatnie 365 dni.
-  async function priceOn(id, cur, date) {
-    const [y, m, d] = String(date).split('-');
-    const data = await getJson(`/coins/${encodeURIComponent(id)}/history`, { date: `${d}-${m}-${y}`, localization: 'false' }, { ttl: 24 * 3600000 });
-    const v = data && data.market_data && data.market_data.current_price ? data.market_data.current_price[cur] : null;
-    if (!(v > 0)) throw new MarketError('Brak ceny z tego dnia (publiczne dane obejmują ostatnie 365 dni).', 'http');
-    return v;
-  }
-
   window.Market = {
-    quotes, top, search, chart, rates, priceOn, MarketError,
+    quotes, top, search, chart, rates, MarketError,
     setKey: (k) => { apiKey = String(k || '').trim(); },
     setTransport: (fn) => { transport = fn; cache.clear(); },
     clearCache: () => cache.clear()

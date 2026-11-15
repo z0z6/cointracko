@@ -335,7 +335,8 @@ code, .mono { font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; 
 .c-ic { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; background: var(--bg-3); object-fit: cover; }
 .c-ic.ph { display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--text-2); text-transform: uppercase; }
 .c-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.c-sym { font-size: 11.5px; color: var(--text-2); text-transform: uppercase; }
+.c-sym { font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
+.c-sym .up-sym { text-transform: uppercase; }
 .c-spark { width: 100px; flex-shrink: 0; display: flex; justify-content: flex-end; }
 .c-price, .c-val { width: 128px; text-align: right; flex-shrink: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .c-val .sub { font-size: 11.5px; font-weight: 500; color: var(--text-2); }
@@ -577,3 +578,72 @@ code, .mono { font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace; 
 @media (prefers-color-scheme: dark) { .news-tone.bullish { color: var(--green); } }
 @media (max-width: 760px) { .news-item { padding: 10px 12px; } }
 .c-ic.sm { width: 24px; height: 24px; }
+
+/* ───── motywy kolorystyczne (7): kolor wyróżniający + odcień tła, jasny i ciemny ───── */
+html[data-palette="violet"] { --accent: #6f42f0; --accent-soft: rgba(111, 66, 240, .13); --bg-2: #f6f4fd; --bg-3: #ebe7f8; --sidebar: rgba(237, 233, 250, .92); }
+html[data-palette="emerald"] { --accent: #0b8f5a; --accent-soft: rgba(11, 143, 90, .13); --bg-2: #f2f8f5; --bg-3: #e3efe8; --sidebar: rgba(228, 240, 233, .92); }
+html[data-palette="amber"] { --accent: #d95f00; --accent-soft: rgba(217, 95, 0, .13); --bg-2: #fbf6f0; --bg-3: #f3e8da; --sidebar: rgba(246, 236, 222, .92); }
+html[data-palette="rose"] { --accent: #d81b60; --accent-soft: rgba(216, 27, 96, .12); --bg-2: #fcf3f6; --bg-3: #f6e2ea; --sidebar: rgba(249, 230, 238, .92); }
+html[data-palette="graphite"] { --accent: #475467; --accent-soft: rgba(71, 84, 103, .14); --bg-2: #f4f5f6; --bg-3: #e6e8ea; --sidebar: rgba(228, 230, 233, .92); }
+html[data-palette="teal"] { --accent: #00838f; --accent-soft: rgba(0, 131, 143, .13); --bg-2: #f0f8f9; --bg-3: #dcedef; --sidebar: rgba(222, 238, 240, .92); }
+@media (prefers-color-scheme: dark) {
+  html[data-palette="violet"] { --accent: #8b6cff; --accent-soft: rgba(139, 108, 255, .2); --bg: #1a1724; --bg-2: #14111c; --bg-3: #2a2638; --card: #221f2e; --sidebar: rgba(36, 32, 50, .94); }
+  html[data-palette="emerald"] { --accent: #2fd08a; --accent-soft: rgba(47, 208, 138, .18); --bg: #16201b; --bg-2: #111a16; --bg-3: #22302a; --card: #1d2923; --sidebar: rgba(28, 40, 34, .94); }
+  html[data-palette="amber"] { --accent: #ff9a3d; --accent-soft: rgba(255, 154, 61, .18); --bg: #1f1913; --bg-2: #181310; --bg-3: #322a20; --card: #29211a; --sidebar: rgba(44, 36, 28, .94); }
+  html[data-palette="rose"] { --accent: #ff5c93; --accent-soft: rgba(255, 92, 147, .18); --bg: #201519; --bg-2: #181012; --bg-3: #33232b; --card: #2a1d23; --sidebar: rgba(46, 32, 40, .94); }
+  html[data-palette="graphite"] { --accent: #98a2b3; --accent-soft: rgba(152, 162, 179, .2); --bg: #1a1b1c; --bg-2: #141516; --bg-3: #2a2c2e; --card: #232426; --sidebar: rgba(34, 36, 38, .94); }
+  html[data-palette="teal"] { --accent: #26c6da; --accent-soft: rgba(38, 198, 218, .18); --bg: #142021; --bg-2: #101a1b; --bg-3: #1f3234; --card: #1a2a2c; --sidebar: rgba(26, 40, 42, .94); }
+}
+.palette-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px; padding: 14px 16px; }
+.palette-opt { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 10px 6px; border-radius: 12px; border: 2px solid transparent; background: var(--bg-2); cursor: pointer; }
+.palette-opt.on { border-color: var(--accent); background: var(--accent-soft); }
+.palette-opt .pal-dot { width: 30px; height: 30px; border-radius: 50%; box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .35), 0 1px 3px rgba(0, 0, 0, .25); }
+.palette-opt .pal-name { font-size: 11.5px; font-weight: 600; }
+
+/* ───── kalkulator ───── */
+.calc-card { max-width: 640px; }
+.calc-line { display: flex; gap: 12px; align-items: flex-end; }
+.calc-line .field { margin: 0; flex: 1 1 auto; min-width: 0; }
+.calc-line .calc-asset { flex: 0 0 210px; }
+.calc-num { font-size: 22px; font-weight: 650; height: 52px; font-variant-numeric: tabular-nums; }
+.calc-swap { display: flex; justify-content: center; margin: 6px 0; }
+.calc-mode { margin-top: 18px; }
+.calc-date { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.calc-date .input { width: 160px; }
+.calc-quick { display: flex; gap: 6px; flex-wrap: wrap; }
+.calc-info { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--sep); min-height: 60px; display: flex; flex-direction: column; gap: 6px; }
+.calc-rate { font-size: 15px; }
+.calc-today { font-size: 13.5px; }
+.calc-err { display: flex; gap: 8px; align-items: center; color: var(--red); }
+
+/* ───── aktywa na pulpicie: wykres w wolnym miejscu między ikoną a ceną ───── */
+@media (min-width: 761px) {
+  .holdings .c-coin { flex: 0 1 190px; }
+  .portfolio-list .c-amt { width: 108px; }
+  .portfolio-list .c-price, .portfolio-list .c-val { width: 118px; }
+  .portfolio-list .c-pnl { width: 112px; text-align: right; flex-shrink: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .portfolio-list .c-pct { width: 76px; }
+  .portfolio-list .c-act { width: 60px; }
+}
+.c-chart { flex: 1 1 90px; min-width: 60px; padding: 0 6px; display: flex; align-items: center; }
+.c-chart .spark { width: 100%; height: 34px; }
+.c-chart .spark polyline { vector-effect: non-scaling-stroke; }
+.coin-head .c-chart { color: var(--text-2); }
+@media (max-width: 760px) {
+  .portfolio-list .c-coin { flex: 1 1 calc(100% - 280px); }
+  .portfolio-list .c-chart { flex: 0 0 64px; min-width: 0; padding: 0; order: 2; }
+  .portfolio-list .c-val { order: 3; }
+  .portfolio-list .c-act { order: 6; }
+  .portfolio-list .coin-head .c-chart { display: none; }
+  .toolbar .opt { display: none; }
+}
+
+/* ───── odświeżanie przeciągnięciem (Android) ───── */
+#content { overscroll-behavior-y: contain; }
+.ptr { position: fixed; left: 50%; top: 0; z-index: 60; width: 40px; height: 40px; margin-left: -20px; border-radius: 50%; background: var(--card); box-shadow: var(--shadow-lg); display: flex; align-items: center; justify-content: center; color: var(--accent); pointer-events: none; opacity: 0; transform: translateY(-48px); transition: opacity .15s; }
+.ptr.pulling { opacity: 1; transition: none; }
+.ptr.loading { opacity: 1; transform: translateY(calc(var(--ptr-top, 0px) + 56px)); transition: transform .25s cubic-bezier(.2, .8, .2, 1), opacity .15s; }
+.ptr.done { opacity: 0; transform: translateY(calc(var(--ptr-top, 0px) + 20px)) scale(.7); transition: transform .3s, opacity .3s; }
+.ptr svg { transition: transform .1s; }
+.ptr.loading svg { animation: ptr-spin .8s linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }

@@ -176,10 +176,42 @@
       inflight.set(key, p);
       return p;
     }
-    return { daily };
+    // Cena zamknięcia dnia (UTC) z konkretnej daty 'RRRR-MM-DD' – także sprzed wielu lat.
+    // Najpierw z 6-letniej historii (zapisywanej lokalnie), a dla starszych dat – pojedynczym zapytaniem o ten dzień.
+    async function priceOn(coin, currency, iso) {
+      const ts = Date.parse(String(iso));
+      const today = dayOf(Date.now()) * DAY;
+      if (!isFinite(ts) || !/^\d{4}-\d{2}-\d{2}$/.test(String(iso))) throw new Error('Niepoprawna data.');
+      if (ts > today) throw new Error('Data nie może być z przyszłości.');
+      const sym = String(coin.symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!sym) throw new Error('Brak symbolu monety.');
+      const cur = String(currency || 'usd').toUpperCase();
+      let first = null;
+      try {
+        const r = await daily(coin, currency, 6);
+        first = r.points[0] ? r.points[0][0] : null;
+        const hit = exactOrPrev(r.points, ts, 3);
+        if (hit) return { price: hit[1], date: hit[0], source: r.source, approx: !!r.approx };
+      } catch (_) { /* spróbujemy zapytania o pojedynczy dzień */ }
+      if (first != null && ts >= first) throw new Error('Brak notowań z tego dnia (kryptowaluta mogła jeszcze nie istnieć).');
+      const pts = await fromCryptoCompare(sym, cur, 3, ts + DAY / 2);
+      const hit = exactOrPrev(pts, ts, 3);
+      if (!hit) throw new Error('Brak notowań z tego dnia (kryptowaluta mogła jeszcze nie istnieć).');
+      return { price: hit[1], date: hit[0], source: 'cryptocompare', approx: false };
+    }
+    return { daily, priceOn };
+  }
+
+  // punkt z dokładnie tego dnia albo z ostatnich `gap` dni wcześniej (luki w danych)
+  function exactOrPrev(points, ts, gap) {
+    for (let i = points.length - 1; i >= 0; i--) {
+      if (points[i][0] === ts) return points[i];
+      if (points[i][0] < ts) return ts - points[i][0] <= gap * DAY ? points[i] : null;
+    }
+    return null;
   }
 
   const trim = (points, from) => (points[0] && points[0][0] < from ? points.filter((p) => p[0] >= from) : points);
 
-  return { DAY, parseCryptoCompareDaily, parseBinanceKlines, mergeDaily, cleanSpikes, priceOnOrBefore, portfolioDaily, create };
+  return { DAY, parseCryptoCompareDaily, parseBinanceKlines, mergeDaily, cleanSpikes, priceOnOrBefore, exactOrPrev, portfolioDaily, create };
 });

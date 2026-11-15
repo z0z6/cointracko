@@ -117,7 +117,7 @@ class BrowserServer {
       // zapytania zdalne przeglądarki idą przez ten sam bezpieczny klient (lista adresów, limity, wspólna pamięć podręczna)
       const r = await this.readBody(req);
       if (!r || typeof r !== 'object') throw new Error('Brak zapytania.');
-      return this.json(res, 200, { ok: true, ...(await h.remote.request({ url: r.url, method: r.method, body: r.body, as: r.as, ttl: r.ttl, key: r.key })) });
+      return this.json(res, 200, { ok: true, ...(await h.remote.request({ url: r.url, method: r.method, body: r.body, as: r.as, ttl: r.ttl, fresh: r.fresh === true, key: r.key })) });
     }
     if (route === 'POST /api/data') {
       const body = await this.readBody(req);
@@ -128,8 +128,8 @@ class BrowserServer {
     if (route === 'POST /api/settings') {
       const patch = await this.readBody(req);
       if (!patch || typeof patch !== 'object') throw new Error('Brak ustawień.');
-      // przeglądarka może zmieniać tylko wygląd, notowania, alerty i wiadomości – serwerem i oknem steruje się z aplikacji
-      return this.json(res, 200, { ok: true, settings: h.setSettings(pickSettingsPatch(patch, ['ui', 'market', 'alerts', 'intel'])) });
+      // przeglądarka może zmieniać tylko wygląd, notowania i wiadomości – serwerem i oknem steruje się z aplikacji
+      return this.json(res, 200, { ok: true, settings: h.setSettings(pickSettingsPatch(patch, ['ui', 'market', 'intel'])) });
     }
     return this.json(res, 404, { ok: false, error: 'Nie ma takiego adresu.' });
   }

@@ -12,8 +12,19 @@
     eur: { label: 'EUR – euro', code: 'EUR' }
   };
 
+  // Motywy kolorystyczne (style w styles.css: html[data-palette])
+  const PALETTES = [
+    { id: 'ocean', label: 'Ocean', color: '#007aff' },
+    { id: 'violet', label: 'Fiolet', color: '#6f42f0' },
+    { id: 'emerald', label: 'Szmaragd', color: '#0b8f5a' },
+    { id: 'amber', label: 'Bursztyn', color: '#d95f00' },
+    { id: 'rose', label: 'Róża', color: '#d81b60' },
+    { id: 'graphite', label: 'Grafit', color: '#475467' },
+    { id: 'teal', label: 'Turkus', color: '#00838f' }
+  ];
+
   const DEFAULT_SETTINGS = {
-    ui: { theme: 'system' }, // 'system' | 'light' | 'dark'
+    ui: { theme: 'system', palette: 'ocean' }, // theme: 'system' | 'light' | 'dark'; palette: jeden z 7 motywów kolorystycznych (PALETTES)
     market: {
       currency: 'usd', refreshSec: 60, cgKey: '',
       useConsensus: true, // wyceniaj według średniej ze zgodnych źródeł (oracle + giełdy + CoinGecko)
@@ -21,7 +32,6 @@
       sources: { pyth: true, redstone: true, chainlink: true, cryptocompare: true, coinbase: true, binance: true, coingecko: true }
     },
     window: { closeAction: 'tray', autostart: true, startHidden: true }, // closeAction: 'tray' – chowaj do zasobnika, 'minimize' – minimalizuj na pasek zadań, 'quit' – zakończ; autostart: uruchamiaj z systemem (okno schowane, gdy startHidden)
-    alerts: { notifications: true },
     intel: { enabled: true, notify: true, minSeverity: 4 }, // wiadomości i wykrywanie anomalii
     browser: { enabled: false, port: 47820 } // podgląd w przeglądarce (tylko komputer): http://127.0.0.1:port
   };
@@ -30,8 +40,6 @@
     watch: [], // [{ id, symbol, name, image }]
     holdings: {}, // { id: ilość } – wyliczane z wpisów (suma kupna − sprzedaży); nie edytuje się go bezpośrednio
     lots: {}, // { id: [{ id, type: 'buy'|'sell', date: 'RRRR-MM-DD' lub '', amount, price, currency }] } – wpisy (jedyne źródło ilości)
-    alerts: [], // [{ id, coinId, type, value, currency, repeat, active, armed, lastTriggered }]
-    alertLog: [], // [{ at, coinId, title, body }]
     hints: {}
   };
 
@@ -76,7 +84,7 @@
     for (const k of Object.keys(d.market.sources)) src[k] = asBool(r.market.sources && r.market.sources[k], true);
     const tol = Number(r.market.tolerancePct);
     return {
-      ui: { theme: oneOf(r.ui.theme, ['system', 'light', 'dark'], 'system') },
+      ui: { theme: oneOf(r.ui.theme, ['system', 'light', 'dark'], 'system'), palette: oneOf(r.ui.palette, PALETTES.map((x) => x.id), 'ocean') },
       market: {
         currency: hasOwn(CURRENCIES, r.market.currency) ? r.market.currency : 'usd',
         refreshSec: clampInt(r.market.refreshSec, 15, 3600, 60),
@@ -86,7 +94,6 @@
         sources: src
       },
       window: { closeAction: oneOf(r.window.closeAction, ['tray', 'minimize', 'quit'], 'tray'), autostart: asBool(r.window.autostart, true), startHidden: asBool(r.window.startHidden, true) },
-      alerts: { notifications: asBool(r.alerts.notifications, true) },
       intel: { enabled: asBool(r.intel.enabled, true), notify: asBool(r.intel.notify, true), minSeverity: clampInt(r.intel.minSeverity, 1, 5, 4) },
       browser: { enabled: asBool(r.browser.enabled, false), port: clampInt(r.browser.port, 1024, 65535, 47820) }
     };
@@ -110,20 +117,8 @@
   const COIN_ID = /^[a-z0-9][a-z0-9._-]{0,99}$/;
   const okId = (id) => typeof id === 'string' && COIN_ID.test(id) && !UNSAFE_KEYS.has(id);
   const SAFE_IMAGE = /^(https:\/\/(coin-images|assets)\.coingecko\.com\/[\w\-./%?=&]{1,300}|data:image\/(png|jpeg|webp|svg\+xml)[;,][^"'\s]{0,3000})$/;
-  const MAX_WATCH = 500; const MAX_LOTS = 5000; const MAX_ALERTS = 500;
+  const MAX_WATCH = 500; const MAX_LOTS = 5000;
   const str = (v, n) => String(v == null ? '' : v).slice(0, n);
-
-  function sanitizeAlert(a) {
-    if (!a || typeof a !== 'object' || !okId(a.coinId) || !hasOwn(ALERT_TYPES, a.type) || !isFinite(Number(a.value))) return null;
-    const num = (v) => (v == null || !isFinite(Number(v)) ? undefined : Number(v));
-    const out = {
-      id: str(a.id || Math.random().toString(36).slice(2, 10), 40), coinId: a.coinId, type: a.type, value: Number(a.value),
-      currency: hasOwn(CURRENCIES, a.currency) ? a.currency : 'usd', repeat: !!a.repeat, active: a.active !== false, armed: a.armed !== false
-    };
-    if (num(a.lastTriggered) !== undefined) out.lastTriggered = num(a.lastTriggered);
-    if (num(a.lastPrice) !== undefined) out.lastPrice = num(a.lastPrice);
-    return out;
-  }
 
   // Porządkuje dane użytkownika wczytane z dysku, z pliku lub od przeglądarki (odporność na uszkodzony, stary lub złośliwy plik).
   function sanitizeData(raw) {
@@ -132,7 +127,6 @@
       .map((w) => ({ id: w.id, symbol: str(w.symbol, 24), name: str(w.name || w.id, 80), image: typeof w.image === 'string' && SAFE_IMAGE.test(w.image) ? w.image : '' }));
     const seen = new Set();
     const uniq = watch.filter((w) => (seen.has(w.id) ? false : seen.add(w.id))).slice(0, MAX_WATCH);
-    const alerts = (Array.isArray(d.alerts) ? d.alerts : []).map(sanitizeAlert).filter(Boolean).slice(0, MAX_ALERTS);
     const lots = {};
     for (const [id, list] of Object.entries(d.lots && typeof d.lots === 'object' && !Array.isArray(d.lots) ? d.lots : {})) {
       if (!okId(id)) continue;
@@ -147,12 +141,10 @@
       if (missing > EPS) lots[id] = sortLots([...(lots[id] || []), { id: 'start-' + id, type: 'buy', date: '', amount: missing, price: null, currency: 'usd' }]);
     }
     const holdings = holdingsFromLots(lots);
-    const log = (Array.isArray(d.alertLog) ? d.alertLog : []).slice(0, 100).filter((l) => l && typeof l === 'object')
-      .map((l) => ({ at: isFinite(Number(l.at)) ? Number(l.at) : 0, coinId: str(l.coinId, 100), title: str(l.title, 200), body: str(l.body, 400) }));
     const hints = {};
     const dh = d.hints && typeof d.hints === 'object' && !Array.isArray(d.hints) ? d.hints : {};
     for (const k of ['seeded', 'trayHint']) if (dh[k] === true) hints[k] = true;
-    return { watch: uniq, holdings, lots, alerts, alertLog: log, hints };
+    return { watch: uniq, holdings, lots, hints };
   }
 
   // ───────────────────────── formatowanie ─────────────────────────
@@ -497,8 +489,7 @@
       currency: settings && settings.market ? settings.market.currency : 'usd',
       watch: data.watch,
       holdings: data.holdings,
-      lots: data.lots || {},
-      alerts: (data.alerts || []).map((a) => ({ id: a.id, coinId: a.coinId, type: a.type, value: a.value, currency: a.currency, repeat: !!a.repeat, active: a.active !== false }))
+      lots: data.lots || {}
     };
   }
 
@@ -513,96 +504,42 @@
     try { raw = JSON.parse(String(text || '').replace(/^﻿/, '')); } catch (_) { throw new Error('To nie jest plik CoinTracko (nie udało się go odczytać jako JSON).'); }
     if (!raw || typeof raw !== 'object' || raw.app !== 'CoinTracko') throw new Error('To nie jest plik wyeksportowany z CoinTracko.');
     if (Number(raw.format) > FILE_FORMAT) throw new Error('Ten plik pochodzi z nowszej wersji CoinTracko – zaktualizuj aplikację.');
-    const data = sanitizeData({ watch: raw.watch, holdings: raw.holdings, lots: raw.lots, alerts: raw.alerts });
+    const data = sanitizeData({ watch: raw.watch, holdings: raw.holdings, lots: raw.lots }); // alerty ręczne z dawnych plików są pomijane
     // każda posiadana moneta musi być na liście obserwowanych
     for (const id of Object.keys(data.holdings)) if (!data.watch.some((w) => w.id === id)) data.watch.push({ id, symbol: '', name: id, image: '' });
     return {
       data,
       exportedAt: typeof raw.exportedAt === 'string' ? raw.exportedAt : '',
       currency: CURRENCIES[raw.currency] ? raw.currency : null,
-      counts: { holdings: Object.keys(data.holdings).length, lots: Object.values(data.lots).reduce((n, l) => n + l.length, 0), watch: data.watch.length, alerts: data.alerts.length }
+      counts: { holdings: Object.keys(data.holdings).length, lots: Object.values(data.lots).reduce((n, l) => n + l.length, 0), watch: data.watch.length }
     };
   }
 
   // mode 'replace' – dane z pliku zastępują portfel; 'merge' – są dołączane (dla tych samych monet wpisy z pliku zastępują obecne)
   function mergeImport(current, incoming, mode) {
-    if (mode === 'replace') return { ...current, watch: incoming.watch, holdings: holdingsFromLots(incoming.lots), lots: incoming.lots, alerts: incoming.alerts.map((a) => ({ ...a, armed: true })) };
+    if (mode === 'replace') return { ...current, watch: incoming.watch, holdings: holdingsFromLots(incoming.lots), lots: incoming.lots };
     const watch = [...current.watch];
     for (const w of incoming.watch) if (!watch.some((x) => x.id === w.id)) watch.push(w);
     const lots = { ...(current.lots || {}) };
     for (const [id, list] of Object.entries(incoming.lots)) lots[id] = list; // dla tych samych monet wpisy z pliku zastępują obecne
-    const alerts = [...current.alerts];
-    for (const a of incoming.alerts) if (!alerts.some((x) => x.id === a.id)) alerts.push({ ...a, armed: true });
-    return sanitizeData({ ...current, watch, holdings: {}, lots, alerts });
+    return sanitizeData({ ...current, watch, holdings: {}, lots });
   }
 
-  // ───────────────────────── alerty ─────────────────────────
+  // ───────────────────────── kalkulator ─────────────────────────
 
-  const ALERT_TYPES = {
-    above: { label: 'Cena wzrośnie powyżej', unit: 'price' },
-    below: { label: 'Cena spadnie poniżej', unit: 'price' },
-    changeUp: { label: 'Wzrost w 24 h o co najmniej', unit: 'pct' },
-    changeDown: { label: 'Spadek w 24 h o co najmniej', unit: 'pct' }
-  };
-
-  function alertCondition(alert, m) {
-    if (!m || !isFinite(m.price)) return null;
-    const v = Number(alert.value);
-    if (!isFinite(v)) return null;
-    switch (alert.type) {
-      case 'above': return m.price >= v;
-      case 'below': return m.price <= v;
-      case 'changeUp': return isFinite(m.change24h) ? m.change24h >= Math.abs(v) : null;
-      case 'changeDown': return isFinite(m.change24h) ? m.change24h <= -Math.abs(v) : null;
-      default: return null;
-    }
+  // Przelicza ilość między dwiema jednostkami o znanych cenach w tej samej walucie bazowej.
+  // unitFrom / unitTo = cena 1 jednostki (np. 1 XRP = 2,3 PLN → 2,3; 1 PLN w PLN → 1).
+  function convertAmount(amount, unitFrom, unitTo, reverse = false) {
+    const a = Number(amount), f = Number(unitFrom), t = Number(unitTo);
+    if (![a, f, t].every(isFinite) || f <= 0 || t <= 0) return NaN;
+    return reverse ? (a * t) / f : (a * f) / t;
   }
 
-  // Sprawdza alerty na aktualnych notowaniach. Zwraca nową listę alertów i te, które właśnie się uruchomiły.
-  // Alert jednorazowy po uruchomieniu wyłącza się; powtarzalny uzbraja się ponownie, gdy warunek przestanie być spełniony.
-  // Alert cenowy dotyczy waluty, w której został ustawiony – przy innej walucie notowań jest pomijany.
-  function evaluateAlerts(alerts, market, cur, now = Date.now()) {
-    const fired = [];
-    let changed = false;
-    const next = (alerts || []).map((a) => {
-      if (!a.active) return a;
-      const unit = (ALERT_TYPES[a.type] || {}).unit;
-      if (unit === 'price' && a.currency && a.currency !== cur) return a;
-      const m = (market || {})[a.coinId];
-      const cond = alertCondition(a, m);
-      if (cond == null) return a;
-      const armed = a.armed !== false;
-      if (cond && armed) {
-        const upd = { ...a, lastTriggered: now, lastPrice: m.price, armed: false };
-        if (!a.repeat) upd.active = false;
-        fired.push({ alert: upd, price: m.price, change24h: m.change24h });
-        changed = true;
-        return upd;
-      }
-      if (!cond && !armed) { changed = true; return { ...a, armed: true }; }
-      return a;
-    });
-    return { alerts: next, fired, changed };
-  }
-
-  function alertSummary(alert, cur) {
-    const t = ALERT_TYPES[alert.type];
-    if (!t) return '';
-    const v = t.unit === 'price' ? fmtMoney(Number(alert.value), alert.currency || cur) : fmtPct(Math.abs(Number(alert.value)), 1).replace(/^[+−]/, '');
-    return `${t.label} ${v}`;
-  }
-
-  function alertMessage(fire, coin, cur) {
-    const a = fire.alert;
-    const name = coin ? `${coin.name} (${String(coin.symbol || '').toUpperCase()})` : a.coinId;
-    const price = fmtMoney(fire.price, cur);
-    const title = {
-      above: `${name} powyżej ${fmtMoney(Number(a.value), a.currency || cur)}`,
-      below: `${name} poniżej ${fmtMoney(Number(a.value), a.currency || cur)}`,
-      changeUp: `${name}: ${fmtPct(fire.change24h)} w 24 h`,
-      changeDown: `${name}: ${fmtPct(fire.change24h)} w 24 h`
-    }[a.type] || name;
-    return { title, body: `Aktualna cena: ${price}` + (isFinite(fire.change24h) ? ` (${fmtPct(fire.change24h)} w 24 h)` : '') };
+  // Data „N lat temu” z tym samym dniem i miesiącem (29 lutego → 28 lutego w latach niewysokosnych), jako RRRR-MM-DD.
+  function sameDayYearsAgo(years, now = new Date()) {
+    const y = now.getFullYear() - years, m = now.getMonth(), d = now.getDate();
+    const last = new Date(y, m + 1, 0).getDate();
+    return `${y}-${String(m + 1).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`;
   }
 
   function pickCoin(c) {
@@ -635,15 +572,15 @@
   }
 
   return {
+    PALETTES, convertAmount, sameDayYearsAgo,
     isStable: (sym) => STABLES.has(String(sym || '').toLowerCase()),
-    CURRENCIES, ALERT_TYPES, DEFAULT_SETTINGS, DEFAULT_DATA, STARTER_WATCH,
+    CURRENCIES, DEFAULT_SETTINGS, DEFAULT_DATA, STARTER_WATCH,
     deepMerge, sanitizeData, sanitizeSettings, pickSettingsPatch,
     fmtMoney, fmtAmount, fmtPct, parseAmount,
     portfolio,
     sanitizeLot, sortLots, lotsNet, lotsBalance, holdingsFromLots, convert, positionStats, lotResult, applyLots, newLot,
     portfolioStats, allocation, combineHistory, seriesStats,
     buildExport, exportFileName, parseImport, mergeImport,
-    alertCondition, evaluateAlerts, alertSummary, alertMessage,
     pickCoin,
     downsample, niceTicks
   };

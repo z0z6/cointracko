@@ -15,8 +15,6 @@ const state = {
   top: null, // ranking (pierwsza strona)
   topError: null,
   conn: { status: 'connecting', lastUpdate: 0, error: '' },
-  marketTab: 'watch',
-  marketQuery: '',
   chartDays: 7,
   settingsTab: 'general',
   browser: null, // stan podglądu w przeglądarce (tylko komputer)
@@ -46,6 +44,7 @@ async function init() {
   state.settings = s.settings;
   state.data = s.data;
   Market.setKey(state.settings.market.cgKey);
+  applyPalette();
   if (!state.data.hints.seeded) {
     state.data.hints.seeded = true;
     if (!state.data.watch.length) state.data.watch = Core.STARTER_WATCH.map((w) => ({ ...w }));
@@ -73,6 +72,7 @@ async function init() {
   window.onAppBack = onBack;
 
   render();
+  if (state.info.platform === 'android' || (window.matchMedia && matchMedia('(pointer: coarse)').matches)) initPullToRefresh(); // przeciągnięcie w dół = pełna aktualizacja
   refresh(); // po uruchomieniu od razu łączymy się z siecią i pobieramy notowania
   startIntelLoop(); // wiadomości i anomalie w tle
 }
@@ -81,10 +81,20 @@ function applyExternal({ data, settings }) {
   if (settings) {
     const curChanged = settings.market && settings.market.currency !== cur();
     state.settings = settings;
+    applyPalette();
     if (curChanged) { state.market = {}; state.consensus = {}; state.top = null; state.rates = null; Market.clearCache(); state.conn.lastUpdate = 0; refresh(true); }
   }
   if (data) state.data = Core.sanitizeData(data);
   softRender();
+}
+
+// Motyw kolorystyczny: atrybut na <html> przełącza zmienne w styles.css
+function applyPalette() {
+  const id = (state.settings && state.settings.ui && state.settings.ui.palette) || 'ocean';
+  document.documentElement.dataset.palette = id;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  const pal = Core.PALETTES.find((x) => x.id === id);
+  if (meta && pal) meta.setAttribute('content', pal.color);
 }
 
 function setMaxTitle(maximized) {
@@ -101,6 +111,7 @@ function saveData() {
 async function saveSettings(patch, quiet) {
   try {
     state.settings = await platform.saveSettings(patch);
+    applyPalette();
     if (!quiet) toast('Zapisano ustawienia', 'success', 1600);
   } catch (e) { errToast(e); }
 }
@@ -114,7 +125,6 @@ function trackedIds() {
   const ids = new Set(state.data.watch.map((w) => w.id));
   Object.keys(state.data.holdings).forEach((id) => ids.add(id));
   Object.keys(state.data.lots).forEach((id) => ids.add(id));
-  state.data.alerts.forEach((a) => ids.add(a.coinId));
   if (state.view === 'coin' && state.coinId) ids.add(state.coinId);
   return [...ids];
 }
@@ -139,11 +149,9 @@ async function refresh(manual) {
       if (q && (w.image !== q.image || w.name !== q.name || w.symbol !== q.symbol)) { w.image = q.image || w.image; w.name = q.name; w.symbol = q.symbol; touched = true; }
     }
     if (touched) saveData();
-    if (state.top && state.view === 'market' && state.marketTab === 'top') { try { state.top = await Market.top(cur(), 1, { ttl: 45000 }); } catch (_) { /* zostaje poprzedni ranking */ } }
     if (needRates()) { try { state.rates = await Market.rates(); } catch (_) { /* zostają poprzednie kursy */ } }
     failures = 0;
     state.conn = { status: 'live', lastUpdate: Date.now(), error: '' };
-    checkAlerts();
     updateTray();
     if (manual === true && before === 'offline') toast('Połączono – notowania są aktualne', 'success', 2200);
     afterQuotes();
@@ -189,22 +197,6 @@ function updateTray() {
   platform.setTrayInfo(p.total > 0 ? `CoinTracko — portfel ${money(p.total)} (${Core.fmtPct(p.change24hPct)} w 24 h)` : 'CoinTracko').catch(() => {});
 }
 
-function checkAlerts() {
-  if (platform.hosted) return; // alerty sprawdza okno aplikacji – inaczej powiadomienia by się dublowały
-  const res = Core.evaluateAlerts(state.data.alerts, state.market, cur());
-  if (!res.changed) return;
-  state.data.alerts = res.alerts;
-  for (const f of res.fired) {
-    const coin = coinInfo(f.alert.coinId);
-    const msg = Core.alertMessage(f, coin, cur());
-    state.data.alertLog.unshift({ at: Date.now(), coinId: f.alert.coinId, title: msg.title, body: msg.body });
-    toast(`${msg.title}. ${msg.body}`, 'info', 9000);
-    if (state.settings.alerts.notifications) platform.notify(msg.title, msg.body).catch(() => {});
-  }
-  state.data.alertLog = state.data.alertLog.slice(0, 100);
-  saveData();
-}
-
 // ───────────────────────── pomocnicze: monety ─────────────────────────
 function coinInfo(id) {
   const q = state.market[id];
@@ -225,7 +217,7 @@ function coinIcon(c, cls) {
 
 function coinCell(c, extra) {
   return h('div', { class: 'c-coin' }, coinIcon(c),
-    h('div', { style: { minWidth: 0 } }, h('div', { class: 'c-name' }, c.name), h('div', { class: 'c-sym' }, c.symbol, extra ? ' · ' + extra : '')));
+    h('div', { style: { minWidth: 0 } }, h('div', { class: 'c-name' }, c.name), h('div', { class: 'c-sym' }, h('span', { class: 'up-sym' }, c.symbol), extra ? ' · ' + extra : '')));
 }
 
 function pctEl(n, cls) { return h('div', { class: (cls || 'c-pct') + ' ' + pctClass(n) }, Core.fmtPct(n)); }
@@ -282,13 +274,10 @@ function onBack() {
 
 function renderSidebar() {
   const sb = document.getElementById('sidebar');
-  const active = state.data.alerts.filter((a) => a.active).length;
   const items = [
     ['dashboard', 'home', 'Pulpit'],
-    ['market', 'chart', 'Rynek'],
-    ['portfolio', 'wallet', 'Portfel'],
-    ['alerts', 'bell', 'Alerty', active || null],
-    ['news', 'news', 'Wiadomości', hiAnomalies().length || null],
+    ['alerts', 'bell', 'Alerty', hiAnomalies().length || null],
+    ['calc', 'calc', 'Kalkulator'],
     ['stats', 'pie', 'Statystyki']
   ];
   const cv = state.view === 'coin' ? state.backTo : state.view;
@@ -319,12 +308,12 @@ function render(keepScroll) {
   const top = c.scrollTop;
   if (chartHandle) { chartHandle.destroy(); chartHandle = null; }
   state.onQuotes = null;
-  const views = { dashboard: viewDashboard, market: viewMarket, portfolio: viewPortfolio, alerts: viewAlerts, news: viewNews, stats: viewStats, settings: viewSettings, coin: viewCoin };
+  const views = { dashboard: viewDashboard, alerts: viewNews, calc: viewCalc, stats: viewStats, settings: viewSettings, coin: viewCoin };
   const el = (views[state.view] || viewDashboard)();
   if (!keepScroll) el.classList.add('fade-in');
   c.replaceChildren(el);
   if (keepScroll) c.scrollTop = top;
-  const titles = { dashboard: 'Pulpit', market: 'Rynek', portfolio: 'Portfel', alerts: 'Alerty', news: 'Wiadomości', stats: 'Statystyki', settings: 'Ustawienia', coin: coinInfo(state.coinId).name };
+  const titles = { dashboard: 'Pulpit', alerts: 'Alerty', calc: 'Kalkulator', stats: 'Statystyki', settings: 'Ustawienia', coin: coinInfo(state.coinId).name };
   document.getElementById('window-title').textContent = titles[state.view] + ' — CoinTracko';
 }
 
@@ -363,9 +352,11 @@ function marketHead(opts = {}) {
 }
 
 // ───────────────────────── pulpit ─────────────────────────
+// Pulpit = dawny Pulpit + Portfel: wartość aktywów, udział (wykres kołowy) i tabela aktywów z wykresem 7 dni
+// w wolnym miejscu między ikoną aktywa a ceną. Obserwowane są poniżej.
 function viewDashboard() {
   const p = Core.portfolio(state.data.holdings, state.market);
-  const hasHoldings = Object.keys(state.data.holdings).length > 0;
+  const hasHoldings = p.items.length > 0;
   const loading = !state.conn.lastUpdate && state.conn.status !== 'offline';
   const page = h('div', { class: 'page' }, offlineBanner(), anomalyBanner());
 
@@ -374,52 +365,58 @@ function viewDashboard() {
     const ps = Core.portfolioStats(state.data, state.market, cur(), state.rates, coinInfo);
     page.append(h('div', { class: 'card total' },
       h('div', { class: 'total-main' },
-        h('div', { class: 'total-label' }, 'Wartość portfela'),
+        h('div', { class: 'total-label' }, 'Wartość aktywów'),
         h('div', { class: 'total-value' }, loading ? '…' : money(p.total)),
         loading ? null : h('div', { class: 'total-change' }, pctChip(p.change24hPct),
           h('span', { class: pctClass(p.change24hValue) }, signed(p.change24hValue)), h('span', { class: 'muted' }, 'w ciągu 24 h')),
         loading || ps.pnl == null ? null : h('div', { class: 'total-change' }, pctChip(ps.pnlPct),
-          h('span', { class: pctClass(ps.pnl) }, signed(ps.pnl)), h('span', { class: 'muted' }, 'od zakupu'))),
+          h('span', { class: pctClass(ps.pnl) }, signed(ps.pnl)), h('span', { class: 'muted' }, 'od zakupu' + (ps.cost > 0 ? ` (zainwestowano ${money(ps.cost)})` : '')))),
       loading ? null : h('div', { class: 'total-side pie-side', role: 'button', title: 'Otwórz statystyki', onclick: () => go('stats') }, donutBox(segs, 132, 22), allocLegend(segs))));
 
-    page.append(h('div', { class: 'section-head' }, h('h2', null, 'Twoje aktywa'), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn plain sm', onclick: () => go('portfolio') }, 'Edytuj portfel', iconEl('chevronR', 12))));
-    page.append(h('div', { class: 'card coin-list holdings' },
-      h('div', { class: 'coin-head' }, h('div', { class: 'c-coin' }, 'Aktywo'), h('div', { class: 'c-price' }, 'Cena'), h('div', { class: 'c-val' }, 'Wartość'), h('div', { class: 'c-pct' }, '24 h')),
-      p.items.slice(0, 8).map((i) => {
+    page.append(h('div', { class: 'section-head' }, h('h2', null, 'Twoje aktywa'), h('span', { class: 'muted' }, assetsWord(p.items.length))));
+    page.append(h('div', { class: 'card coin-list holdings portfolio-list' },
+      h('div', { class: 'coin-head' }, h('div', { class: 'c-coin' }, 'Aktywo'), h('div', { class: 'c-chart' }, '7 dni'), h('div', { class: 'c-amt', style: { textAlign: 'right' } }, 'Ilość'), h('div', { class: 'c-price' }, 'Cena'), h('div', { class: 'c-val' }, 'Wartość'), h('div', { class: 'c-pnl' }, 'Zysk / strata'), h('div', { class: 'c-pct' }, '24 h'), h('div', { class: 'c-act' })),
+      p.items.map((i) => {
         const c = coinInfo(i.id);
         const q = state.market[i.id] || {};
+        const st = posStats(i.id);
+        const spark = q.spark ? Charts.sparkline(q.spark, 160, 34) : null;
+        if (spark) spark.setAttribute('preserveAspectRatio', 'none');
         return h('div', { class: 'coin-row click', onclick: () => go('coin', { id: i.id }) },
-          coinCell(c, Core.fmtAmount(i.amount)),
+          coinCell(c, st.count ? `${st.count} ${st.count === 1 ? 'wpis' : st.count < 5 ? 'wpisy' : 'wpisów'}` : ''),
+          h('div', { class: 'c-chart' }, spark),
+          h('div', { class: 'c-amt' }, h('button', { class: 'amt-btn num', title: 'Edytuj wpisy (suma ilości)', 'aria-label': `Ilość ${c.name}: ${Core.fmtAmount(i.amount)}. Edytuj wpisy`, onclick: (e) => { e.stopPropagation(); openLots(i.id); } }, Core.fmtAmount(i.amount), iconEl('pencil', 12))),
           h('div', { class: 'c-price' }, money(q.price)),
-          h('div', { class: 'c-val' }, money(i.value), h('div', { class: 'sub' }, i.value != null ? Core.fmtPct(i.share * 100, 1).replace('+', '') + ' portfela' : 'brak notowań')),
-          pctEl(i.change24h));
+          h('div', { class: 'c-val' }, money(i.value), h('div', { class: 'sub' }, i.value != null ? Core.fmtPct(i.share * 100, 1).replace('+', '') : 'brak notowań'),
+            st.pnl != null ? h('div', { class: 'sub m-only ' + pctClass(st.pnl) }, `${signed(st.pnl)} (${Core.fmtPct(st.pnlPct, 1)})`) : null),
+          h('div', { class: 'c-pnl ' + pctClass(st.pnl) }, st.pnl == null ? h('span', { class: 'muted' }, '—') : [signed(st.pnl), h('div', { class: 'sub' }, Core.fmtPct(st.pnlPct))]),
+          pctEl(i.change24h),
+          h('div', { class: 'c-act' },
+            h('button', { class: 'icon-btn', title: 'Wpisy – zakupy i sprzedaże', 'aria-label': 'Wpisy – zakupy i sprzedaże', onclick: (e) => { e.stopPropagation(); openLots(i.id); }, html: icon('layers', 16) }),
+            h('button', { class: 'icon-btn danger', title: 'Usuń pozycję', 'aria-label': 'Usuń pozycję', onclick: (e) => { e.stopPropagation(); confirmRemoveHolding(i.id); }, html: icon('trash', 16) })));
       })));
+    page.append(h('p', { class: 'group-footer' }, '„Ilość” to suma wpisów danej kryptowaluty. Kliknij ją (lub ikonę z warstwami), aby dodać kolejny zakup albo poprawić datę, ilość i cenę dowolnego wpisu – zysk i strata liczą się od cen zakupu.'));
   } else {
     page.append(h('div', { class: 'card onboard' },
       h('div', { class: 'ob-ic', html: icon('wallet', 30) }),
       h('h2', null, 'Dodaj swoje kryptowaluty'),
-      h('p', null, 'Wybierz kryptowalutę i wpisz, ile jej masz – kolejne zakupy dopisujesz jako osobne wpisy, a aplikacja sumuje ilość i na bieżąco wycenia portfel.'),
+      h('p', null, 'Wybierz kryptowalutę i wpisz, ile jej masz – kolejne zakupy dopisujesz jako osobne wpisy, a aplikacja sumuje ilość i na bieżąco wycenia aktywa. Możesz też zaimportować plik z innego urządzenia.'),
       h('div', { class: 'acts' },
         h('button', { class: 'btn primary lg', onclick: addHoldingFlow }, iconEl('plus', 16), 'Dodaj pozycję'),
         h('button', { class: 'btn lg', onclick: importFile }, iconEl('upload', 16), 'Importuj plik'))));
   }
 
   page.append(h('div', { class: 'section-head' }, h('h2', null, 'Obserwowane'), h('div', { class: 'spacer' }),
-    h('button', { class: 'btn plain sm', onclick: () => go('market') }, 'Rynek', iconEl('chevronR', 12))));
+    h('button', { class: 'btn plain sm', onclick: () => pickCoin({ title: 'Dodaj do obserwowanych', onPick: (c) => { addWatch(c); refresh(); render(true); } }) }, iconEl('plus', 13), 'Dodaj')));
   page.append(state.data.watch.length
     ? h('div', { class: 'card coin-list' }, marketHead(), sortedWatch().map((w) => marketRow(w)))
     : h('div', { class: 'card empty' }, 'Nie obserwujesz jeszcze żadnej kryptowaluty.'));
 
-  if (state.data.alertLog.length) {
-    page.append(h('div', { class: 'section-head' }, h('h2', null, 'Ostatnie alerty'), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn plain sm', onclick: () => go('alerts') }, 'Wszystkie', iconEl('chevronR', 12))));
-    page.append(h('div', { class: 'card' }, state.data.alertLog.slice(0, 3).map(logRow)));
-  }
-
   return h('div', null,
     h('div', { class: 'toolbar' }, h('h1', null, 'Pulpit'), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn primary', onclick: () => pickCoin({ title: 'Dodaj do obserwowanych', onPick: (c) => { addWatch(c); refresh(); render(true); } }) }, iconEl('plus', 15), 'Dodaj')),
+      h('button', { class: 'btn', title: 'Zapisz portfel do pliku', onclick: exportFile }, iconEl('download', 15), h('span', { class: 'opt' }, 'Eksport')),
+      h('button', { class: 'btn', title: 'Wczytaj portfel z pliku', onclick: importFile }, iconEl('upload', 15), h('span', { class: 'opt' }, 'Import')),
+      h('button', { class: 'btn primary', onclick: addHoldingFlow }, iconEl('plus', 15), 'Dodaj pozycję')),
     page);
 }
 
@@ -442,40 +439,7 @@ function sortedWatch() {
   return [...state.data.watch].sort((a, b) => ((state.market[b.id] || {}).marketCap || 0) - ((state.market[a.id] || {}).marketCap || 0));
 }
 
-// ───────────────────────── rynek ─────────────────────────
-function viewMarket() {
-  const q = state.marketQuery.trim().toLowerCase();
-  const match = (c) => !q || String(c.name).toLowerCase().includes(q) || String(c.symbol).toLowerCase().includes(q);
-  const listBox = h('div');
-  const fill = () => {
-    if (state.marketTab === 'watch') {
-      const items = sortedWatch().filter(match);
-      listBox.replaceChildren(items.length
-        ? h('div', { class: 'card coin-list' }, marketHead({ cap: true }), items.map((w) => marketRow(w, { cap: true })))
-        : h('div', { class: 'card empty' }, q ? 'Brak obserwowanych pasujących do wyszukiwania.' : 'Lista obserwowanych jest pusta. Dodaj kryptowaluty przyciskiem „Dodaj” lub gwiazdką w zakładce „Top 100”.'));
-      return;
-    }
-    if (!state.top) {
-      listBox.replaceChildren(h('div', { class: 'card empty' }, state.topError ? h('div', null, state.topError, h('div', { style: { marginTop: '10px' } }, h('button', { class: 'btn', onclick: () => { state.topError = null; loadTop(); fill(); } }, 'Spróbuj ponownie'))) : h('div', { class: 'analyzing', style: { justifyContent: 'center' } }, spinner(18), 'Pobieram ranking…')));
-      return;
-    }
-    const items = state.top.slice(0, 100).filter(match);
-    listBox.replaceChildren(items.length
-      ? h('div', { class: 'card coin-list' }, marketHead({ rank: true, cap: true }), items.map((c) => marketRow(c, { rank: true, cap: true })))
-      : h('div', { class: 'card empty' }, 'Brak wyników w pierwszej setce. Użyj przycisku „Dodaj”, aby przeszukać wszystkie kryptowaluty.'));
-  };
-  if (state.marketTab === 'top' && !state.top && !state.topError) loadTop();
-  fill();
-  const search = h('input', { class: 'input', type: 'search', placeholder: 'Filtruj listę…', value: state.marketQuery, 'aria-label': 'Filtruj listę', oninput: (e) => { state.marketQuery = e.target.value; fill(); } });
-  return h('div', null,
-    h('div', { class: 'toolbar' }, h('h1', null, 'Rynek'),
-      segmented([{ value: 'watch', label: 'Obserwowane' }, { value: 'top', label: 'Top 100' }], state.marketTab, (v) => { state.marketTab = v; render(); }),
-      h('div', { class: 'spacer' }),
-      h('div', { class: 'search-field' }, iconEl('search', 14), search),
-      h('button', { class: 'btn primary', onclick: () => pickCoin({ title: 'Dodaj do obserwowanych', onPick: (c) => { addWatch(c); refresh(); render(true); } }) }, iconEl('plus', 15), 'Dodaj')),
-    h('div', { class: 'page' }, offlineBanner(), listBox));
-}
-
+// ───────────────────────── ranking (dla wyszukiwarki monet) ─────────────────────────
 let topLoading = false;
 async function loadTop() {
   if (topLoading) return;
@@ -485,7 +449,6 @@ async function loadTop() {
     state.topError = null;
   } catch (e) { if (!state.top) state.topError = e.message; }
   topLoading = false;
-  if (state.view === 'market' && state.marketTab === 'top') softRender();
 }
 
 // ───────────────────────── wyszukiwarka monet (arkusz) ─────────────────────────
@@ -523,58 +486,7 @@ function pickCoin({ title, onPick }) {
   setTimeout(() => input.focus(), 60);
 }
 
-// ───────────────────────── portfel ─────────────────────────
-function viewPortfolio() {
-  const p = Core.portfolio(state.data.holdings, state.market);
-  const ps = Core.portfolioStats(state.data, state.market, cur(), state.rates, coinInfo);
-  const page = h('div', { class: 'page' }, offlineBanner());
-  if (!p.items.length) {
-    page.append(h('div', { class: 'card onboard' },
-      h('div', { class: 'ob-ic', html: icon('wallet', 30) }),
-      h('h2', null, 'Portfel jest pusty'),
-      h('p', null, 'Dodaj pozycję albo zaimportuj plik portfela z innego urządzenia. Każdy zakup to osobny wpis z datą, ilością i ceną – wszystkie można poprawić, a suma i wartość przeliczają się na bieżąco.'),
-      h('div', { class: 'acts' },
-        h('button', { class: 'btn primary lg', onclick: addHoldingFlow }, iconEl('plus', 16), 'Dodaj pozycję'),
-        h('button', { class: 'btn lg', onclick: importFile }, iconEl('upload', 16), 'Importuj plik'))));
-  } else {
-    page.append(h('div', { class: 'grid grid-4', style: { marginBottom: '16px' } },
-      h('div', { class: 'card stat' }, h('div', { class: 'label' }, iconEl('wallet', 14), 'Wartość portfela'), h('div', { class: 'value num' }, money(p.total))),
-      h('div', { class: 'card stat' }, h('div', { class: 'label' }, iconEl('chart', 14), 'Zmiana w 24 h'),
-        h('div', { class: 'value num ' + pctClass(p.change24hValue) }, signed(p.change24hValue)), h('div', { class: 'stat-sub ' + pctClass(p.change24hPct) }, Core.fmtPct(p.change24hPct))),
-      h('div', { class: 'card stat' }, h('div', { class: 'label' }, iconEl('arrowUp', 14), 'Zysk / strata od zakupu'),
-        h('div', { class: 'value num ' + pctClass(ps.pnl) }, signed(ps.pnl)),
-        h('div', { class: 'stat-sub ' + pctClass(ps.pnlPct) }, ps.pnl == null ? 'wpisz ceny zakupu we wpisach' : Core.fmtPct(ps.pnlPct))),
-      h('div', { class: 'card stat' }, h('div', { class: 'label' }, iconEl('coins', 14), 'Zainwestowano'),
-        h('div', { class: 'value num' }, ps.cost > 0 ? money(ps.cost) : '—'),
-        h('div', { class: 'stat-sub' }, ps.cost > 0 && ps.costCoverage < 0.995 ? `dotyczy ${Core.fmtPct(ps.costCoverage * 100, 0).replace('+', '')} portfela` : assetsWord(p.items.length)))));
-    page.append(h('div', { class: 'card coin-list holdings portfolio-list' },
-      h('div', { class: 'coin-head' }, h('div', { class: 'c-coin' }, 'Aktywo'), h('div', { class: 'c-amt', style: { textAlign: 'right' } }, 'Ilość'), h('div', { class: 'c-price' }, 'Cena'), h('div', { class: 'c-val' }, 'Wartość'), h('div', { class: 'c-pnl' }, 'Zysk / strata'), h('div', { class: 'c-pct' }, '24 h'), h('div', { class: 'c-act' })),
-      p.items.map((i) => {
-        const c = coinInfo(i.id);
-        const q = state.market[i.id] || {};
-        const st = posStats(i.id);
-        return h('div', { class: 'coin-row click', onclick: () => go('coin', { id: i.id }) },
-          coinCell(c, st.count ? `${st.count} ${st.count === 1 ? 'wpis' : st.count < 5 ? 'wpisy' : 'wpisów'}` : ''),
-          h('div', { class: 'c-amt' }, h('button', { class: 'amt-btn num', title: 'Edytuj wpisy (suma ilości)', 'aria-label': `Ilość ${c.name}: ${Core.fmtAmount(i.amount)}. Edytuj wpisy`, onclick: (e) => { e.stopPropagation(); openLots(i.id); } }, Core.fmtAmount(i.amount), iconEl('pencil', 12))),
-          h('div', { class: 'c-price' }, money(q.price)),
-          h('div', { class: 'c-val' }, money(i.value), h('div', { class: 'sub' }, i.value != null ? Core.fmtPct(i.share * 100, 1).replace('+', '') : 'brak notowań'),
-            st.pnl != null ? h('div', { class: 'sub m-only ' + pctClass(st.pnl) }, `${signed(st.pnl)} (${Core.fmtPct(st.pnlPct, 1)})`) : null),
-          h('div', { class: 'c-pnl ' + pctClass(st.pnl) }, st.pnl == null ? h('span', { class: 'muted' }, '—') : [signed(st.pnl), h('div', { class: 'sub' }, Core.fmtPct(st.pnlPct))]),
-          pctEl(i.change24h),
-          h('div', { class: 'c-act' },
-            h('button', { class: 'icon-btn', title: 'Wpisy – zakupy i sprzedaże', 'aria-label': 'Wpisy – zakupy i sprzedaże', onclick: (e) => { e.stopPropagation(); openLots(i.id); }, html: icon('layers', 16) }),
-            h('button', { class: 'icon-btn danger', title: 'Usuń pozycję', 'aria-label': 'Usuń pozycję', onclick: (e) => { e.stopPropagation(); confirmRemoveHolding(i.id); }, html: icon('trash', 16) })));
-      })));
-    page.append(h('p', { class: 'group-footer' }, '„Ilość” to suma wpisów danej kryptowaluty. Kliknij ją (lub ikonę z warstwami), aby dodać kolejny zakup albo poprawić datę, ilość i cenę dowolnego wpisu – zysk i strata liczą się od cen zakupu.'));
-  }
-  return h('div', null,
-    h('div', { class: 'toolbar' }, h('h1', null, 'Portfel'), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn', title: 'Zapisz portfel do pliku', onclick: exportFile }, iconEl('download', 15), 'Eksport'),
-      h('button', { class: 'btn', title: 'Wczytaj portfel z pliku', onclick: importFile }, iconEl('upload', 15), 'Import'),
-      h('button', { class: 'btn primary', onclick: addHoldingFlow }, iconEl('plus', 15), 'Dodaj pozycję')),
-    page);
-}
-
+// ───────────────────────── usuwanie pozycji ─────────────────────────
 function confirmRemoveHolding(id) {
   const c = coinInfo(id);
   const n = lotsOf(id).length;
@@ -583,7 +495,7 @@ function confirmRemoveHolding(id) {
     subtitle: (n ? `Usuniętych zostanie ${n} ${n === 1 ? 'wpis' : n < 5 ? 'wpisy' : 'wpisów'}. ` : '') + 'Kryptowaluta pozostanie na liście obserwowanych.',
     body: h('div'),
     actions: [{ label: 'Anuluj' }, { label: 'Usuń pozycję', kind: 'danger', onClick: () => { removePosition(id); render(true); } }],
-    onClose: () => { if (state.view === 'portfolio') render(true); }
+    onClose: () => { if (state.view === 'dashboard') render(true); }
   });
 }
 
@@ -718,7 +630,13 @@ function openLots(id) {
     if (!form.date) { toast('Wybierz datę', 'error'); return; }
     await busy(btn, async () => {
       try {
-        const v = form.date === todayIso() && isFinite((state.market[id] || {}).price) ? state.market[id].price : await Market.priceOn(id, cur(), form.date);
+        let v;
+        if (form.date === todayIso() && isFinite((state.market[id] || {}).price)) v = state.market[id].price;
+        else {
+          const r = await Svc.history.priceOn(coinInfo(id), cur(), form.date);
+          v = r.price;
+          if (r.approx) toast('Cena przybliżona (zapasowe źródło danych).', 'info', 4000);
+        }
         form.price = String(Number(v.toPrecision(8))).replace('.', ',');
         priceInput.value = form.price;
         priceInput.dispatchEvent(new Event('input'));
@@ -773,21 +691,21 @@ function importFile() {
       if (f.size > 5 * 1024 * 1024) throw new Error('Plik jest zbyt duży jak na plik CoinTracko (limit 5 MB).');
       const imp = Core.parseImport(await f.text());
       const c = imp.counts;
-      if (!c.holdings && !c.watch && !c.alerts) throw new Error('Ten plik nie zawiera żadnych danych portfela.');
+      if (!c.holdings && !c.watch) throw new Error('Ten plik nie zawiera żadnych danych portfela.');
       let mode = Object.keys(state.data.holdings).length ? 'merge' : 'replace';
       const apply = () => {
         state.data = Core.mergeImport(state.data, imp.data, mode);
-        saveData(); updateTray(); refresh(); go('portfolio');
+        saveData(); updateTray(); refresh(); go('dashboard');
         toast('Zaimportowano portfel z pliku', 'success', 3000);
       };
       sheet({
         title: 'Importuj portfel z pliku',
         subtitle: imp.exportedAt ? `Plik zapisano ${dateTimeStr(Date.parse(imp.exportedAt))}.` : f.name,
         body: h('div', null,
-          h('div', { class: 'note-box' }, iconEl('info', 16), h('div', null, `W pliku: pozycji w portfelu ${c.holdings}, wpisów ${c.lots}, obserwowanych ${c.watch}, alertów ${c.alerts}.`)),
-          Object.keys(state.data.holdings).length || state.data.alerts.length ? h('div', { class: 'field' }, h('label', null, 'Co zrobić z obecnymi danymi?'),
+          h('div', { class: 'note-box' }, iconEl('info', 16), h('div', null, `W pliku: pozycji w portfelu ${c.holdings}, wpisów ${c.lots}, obserwowanych ${c.watch}.`)),
+          Object.keys(state.data.holdings).length ? h('div', { class: 'field' }, h('label', null, 'Co zrobić z obecnymi danymi?'),
             segmented([{ value: 'merge', label: 'Połącz z plikiem' }, { value: 'replace', label: 'Zastąp danymi z pliku' }], mode, (v) => { mode = v; }),
-            h('div', { class: 'row-hint' }, 'Połączenie: monety z pliku dostają wpisy z pliku (zastępują obecne wpisy tej monety), pozostałe zostają bez zmian. Zastąpienie: portfel, obserwowane i alerty będą dokładnie takie jak w pliku.')) : null),
+            h('div', { class: 'row-hint' }, 'Połączenie: monety z pliku dostają wpisy z pliku (zastępują obecne wpisy tej monety), pozostałe zostają bez zmian. Zastąpienie: aktywa i obserwowane będą dokładnie takie jak w pliku.')) : null),
         actions: [{ label: 'Anuluj' }, { label: 'Importuj', kind: 'primary', onClick: apply }]
       });
     } catch (e) { errToast(e); }
@@ -806,7 +724,7 @@ function viewStats() {
       h('div', { class: 'ob-ic', html: icon('pie', 30) }),
       h('h2', null, 'Statystyki pojawią się po dodaniu portfela'),
       h('p', null, 'Dodaj posiadane kryptowaluty – zobaczysz strukturę portfela, zysk i stratę od zakupu, zmiany wartości w czasie i wyniki poszczególnych pozycji.'),
-      h('div', { class: 'acts' }, h('button', { class: 'btn primary lg', onclick: () => go('portfolio') }, iconEl('wallet', 16), 'Przejdź do portfela'))));
+      h('div', { class: 'acts' }, h('button', { class: 'btn primary lg', onclick: () => go('dashboard') }, iconEl('wallet', 16), 'Przejdź do portfela'))));
     return h('div', null, head, page);
   }
   const pct = (n, d) => (n == null ? '—' : Core.fmtPct(n, d));
@@ -839,8 +757,7 @@ function viewStats() {
         fact('Najlepszy w 7 dni', perf(ps.best7d, 'change7d'), null, ps.best7d && pctClass(ps.best7d.change7d)),
         fact('Najsłabszy w 7 dni', perf(ps.worst7d, 'change7d'), null, ps.worst7d && pctClass(ps.worst7d.change7d)),
         fact('Najlepszy od zakupu', perf(ps.bestPnl, 'pnlPct'), null, ps.bestPnl && pctClass(ps.bestPnl.pnlPct)),
-        fact('Najsłabszy od zakupu', perf(ps.worstPnl, 'pnlPct'), null, ps.worstPnl && pctClass(ps.worstPnl.pnlPct)),
-        fact('Aktywne alerty', `${state.data.alerts.filter((a) => a.active).length} · uruchomione ${state.data.alertLog.length}`)))));
+        fact('Najsłabszy od zakupu', perf(ps.worstPnl, 'pnlPct'), null, ps.worstPnl && pctClass(ps.worstPnl.pnlPct))))));
 
   // wartość w czasie (historia dzienna do 6 lat – extras.js)
   page.append(portfolioHistoryCard(p));
@@ -948,7 +865,6 @@ function viewCoin() {
     }
   };
 
-  const alerts = state.data.alerts.filter((a) => a.coinId === id);
   const watched = isWatched(id);
   fillQuotes();
   state.onQuotes = fillQuotes;
@@ -969,122 +885,11 @@ function viewCoin() {
         box),
       h('div', { class: 'card', style: { marginTop: '16px', overflow: 'hidden' } }, kv),
       srcBox,
-      h('div', { class: 'two-col' },
-        h('div', { class: 'card card-pad' },
-          h('div', { class: 'card-title' }, iconEl('wallet', 16), 'Twoja pozycja'),
-          amtEl,
-          valueEl,
-          h('div', { style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => openLots(id) }, iconEl(lotsOf(id).length ? 'pencil' : 'plus', 14), lotsOf(id).length ? `Edytuj wpisy (${lotsOf(id).length})` : 'Dodaj ilość'))),
-        h('div', { class: 'card card-pad' },
-          h('div', { class: 'card-title' }, iconEl('bell', 16), 'Alerty', h('div', { class: 'spacer' }),
-            h('button', { class: 'btn sm', onclick: () => editAlert({ coinId: id }) }, iconEl('plus', 12), 'Nowy alert')),
-          alerts.length ? h('div', { style: { margin: '0 -16px -8px' } }, alerts.map((a) => alertRow(a, true))) : h('div', { class: 'muted' }, 'Brak alertów dla tej kryptowaluty.')))));
-}
-
-// ───────────────────────── alerty ─────────────────────────
-function alertRow(a, compact) {
-  const c = coinInfo(a.coinId);
-  const q = state.market[a.coinId] || {};
-  const foreign = Core.ALERT_TYPES[a.type].unit === 'price' && a.currency && a.currency !== cur();
-  const sub = [
-    foreign ? `działa przy walucie ${a.currency.toUpperCase()}` : isFinite(q.price) ? `teraz ${money(q.price)}` : null,
-    a.repeat ? 'powtarzalny' : 'jednorazowy',
-    a.lastTriggered ? `uruchomiony ${dateTimeStr(a.lastTriggered)}` : null
-  ].filter(Boolean).join(' · ');
-  return h('div', { class: 'alert-row' + (a.active ? '' : ' off') },
-    compact ? null : coinIcon(c),
-    h('div', { class: 'grow' },
-      h('div', { class: 't1' }, compact ? Core.alertSummary(a, cur()) : `${c.name}: ${Core.alertSummary(a, cur()).replace(/^./, (x) => x.toLowerCase())}`),
-      h('div', { class: 't2' }, sub)),
-    toggle(a.active, (v) => { a.active = v; if (v) a.armed = true; saveData(); render(true); }),
-    h('button', { class: 'icon-btn', title: 'Edytuj alert', 'aria-label': 'Edytuj alert', onclick: () => editAlert(a), html: icon('pencil', 15) }),
-    h('button', { class: 'icon-btn danger', title: 'Usuń alert', 'aria-label': 'Usuń alert', onclick: () => { state.data.alerts = state.data.alerts.filter((x) => x.id !== a.id); saveData(); render(true); }, html: icon('trash', 15) }));
-}
-
-function logRow(l) {
-  const c = coinInfo(l.coinId);
-  return h('div', { class: 'alert-row' }, coinIcon(c),
-    h('div', { class: 'grow' }, h('div', { class: 't1' }, l.title), h('div', { class: 't2' }, `${dateTimeStr(l.at)} · ${l.body}`)));
-}
-
-function viewAlerts() {
-  const page = h('div', { class: 'page' }, offlineBanner());
-  if (!state.data.alerts.length) {
-    page.append(h('div', { class: 'card onboard' },
-      h('div', { class: 'ob-ic', html: icon('bell', 30) }),
-      h('h2', null, 'Nie przegap ruchu ceny'),
-      h('p', null, 'Ustaw alert, a aplikacja powiadomi Cię, gdy cena przekroczy wybrany poziom albo zmieni się o zadany procent w ciągu 24 godzin.'),
-      h('div', { class: 'acts' }, h('button', { class: 'btn primary lg', onclick: () => editAlert({}) }, iconEl('plus', 16), 'Nowy alert'))));
-  } else {
-    page.append(h('div', { class: 'card' }, state.data.alerts.map((a) => alertRow(a))));
-  }
-  page.append(h('p', { class: 'group-footer' }, platform.desktop
-    ? 'Alerty są sprawdzane przy każdej aktualizacji notowań – także wtedy, gdy okno jest schowane do zasobnika.'
-    : 'Alerty są sprawdzane przy każdej aktualizacji notowań, gdy aplikacja jest uruchomiona. Android może wstrzymać aplikację działającą dłużej w tle.'));
-  if (state.data.alertLog.length) {
-    page.append(h('div', { class: 'section-head' }, h('h2', null, 'Historia'), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn plain sm', onclick: () => { state.data.alertLog = []; saveData(); render(true); } }, 'Wyczyść')));
-    page.append(h('div', { class: 'card' }, state.data.alertLog.slice(0, 30).map(logRow)));
-  }
-  return h('div', null,
-    h('div', { class: 'toolbar' }, h('h1', null, 'Alerty'), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn primary', onclick: () => editAlert({}) }, iconEl('plus', 15), 'Nowy alert')),
-    page);
-}
-
-function editAlert(src) {
-  const isNew = !src.id;
-  const draft = { coinId: src.coinId || null, type: src.type || 'above', value: src.value != null ? src.value : null, repeat: !!src.repeat };
-  const coinBox = h('div');
-  const valueInput = h('input', { class: 'input', style: { width: '170px', textAlign: 'right' }, inputmode: 'decimal' });
-  const unit = h('span', { class: 'muted' });
-  const hint = h('div', { class: 'row-hint' });
-  const suggest = () => {
-    const q = state.market[draft.coinId];
-    const isPrice = Core.ALERT_TYPES[draft.type].unit === 'price';
-    unit.textContent = isPrice ? cur().toUpperCase() : '%';
-    hint.textContent = q && isFinite(q.price) ? `Aktualna cena: ${money(q.price)} · zmiana 24 h: ${Core.fmtPct(q.change24h)}` : '';
-    if (draft.value == null || valueInput.dataset.auto === '1') {
-      let v = '';
-      if (isPrice && q && isFinite(q.price)) v = Number((q.price * (draft.type === 'above' ? 1.05 : 0.95)).toPrecision(4));
-      if (!isPrice) v = 5;
-      valueInput.value = v === '' ? '' : String(v).replace('.', ',');
-      valueInput.dataset.auto = '1';
-    }
-  };
-  valueInput.addEventListener('input', () => { valueInput.dataset.auto = '0'; });
-  const fillCoin = () => {
-    const c = draft.coinId ? coinInfo(draft.coinId) : null;
-    coinBox.replaceChildren(h('button', { class: 'btn', style: { height: '40px', width: '100%', justifyContent: 'flex-start' }, onclick: () => pickCoin({ title: 'Wybierz kryptowalutę', onPick: (p) => { if (!state.market[p.id]) state.market[p.id] = { ...p }; draft.coinId = p.id; fillCoin(); suggest(); refresh(); } }) },
-      c ? [coinIcon(c), h('b', null, c.name), h('span', { class: 'c-sym' }, c.symbol)] : [iconEl('search', 14), 'Wybierz kryptowalutę…']));
-  };
-  if (draft.value != null) valueInput.value = String(draft.value).replace('.', ',');
-  fillCoin(); suggest();
-  sheet({
-    title: isNew ? 'Nowy alert' : 'Edytuj alert',
-    body: h('div', null,
-      h('div', { class: 'field' }, h('label', null, 'Kryptowaluta'), coinBox),
-      h('div', { class: 'field' }, h('label', null, 'Warunek'),
-        select(Object.entries(Core.ALERT_TYPES).map(([value, t]) => ({ value, label: t.label })), draft.type, (v) => { draft.type = v; suggest(); }, { class: 'input full' })),
-      h('div', { class: 'field' }, h('label', null, 'Wartość'), h('div', { class: 'inline-form' }, valueInput, unit), hint),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: draft.repeat, onchange: (e) => { draft.repeat = e.target.checked; } }), 'Powtarzaj (uruchom ponownie, gdy warunek znów zostanie spełniony)')),
-    actions: [{ label: 'Anuluj' }, {
-      label: isNew ? 'Dodaj alert' : 'Zapisz', kind: 'primary', onClick: () => {
-        const v = Core.parseAmount(valueInput.value);
-        if (!draft.coinId) { toast('Wybierz kryptowalutę', 'error'); return false; }
-        if (!isFinite(v) || v <= 0) { toast('Wpisz wartość większą od zera', 'error'); return false; }
-        const base = { coinId: draft.coinId, type: draft.type, value: v, currency: cur(), repeat: draft.repeat, active: true, armed: true };
-        const cond = Core.alertCondition(base, state.market[draft.coinId]);
-        if (isNew) state.data.alerts.unshift({ id: uid(), createdAt: Date.now(), ...base });
-        else Object.assign(state.data.alerts.find((a) => a.id === src.id) || {}, base, { lastTriggered: null });
-        saveData();
-        if (state.settings.alerts.notifications && platform.requestNotifications) platform.requestNotifications();
-        refresh();
-        render(true);
-        toast(cond ? 'Alert zapisany – warunek jest już spełniony, powiadomię przy najbliższej aktualizacji' : 'Alert zapisany', 'success', cond ? 5000 : 2000);
-      }
-    }]
-  });
+      h('div', { class: 'card card-pad', style: { marginTop: '16px' } },
+        h('div', { class: 'card-title' }, iconEl('wallet', 16), 'Twoja pozycja'),
+        amtEl,
+        valueEl,
+        h('div', { style: { marginTop: '12px' } }, h('button', { class: 'btn primary', onclick: () => openLots(id) }, iconEl(lotsOf(id).length ? 'pencil' : 'plus', 14), lotsOf(id).length ? `Edytuj wpisy (${lotsOf(id).length})` : 'Dodaj ilość')))));
 }
 
 // ───────────────────────── ustawienia ─────────────────────────
@@ -1107,6 +912,12 @@ function settingsGeneral() {
   const keyInput = h('input', { class: 'input', style: { width: '260px' }, type: 'password', placeholder: 'opcjonalnie: CG-…', value: s.market.cgKey || '', 'aria-label': 'Klucz CoinGecko',
     onchange: async (e) => { await saveSettings({ market: { cgKey: e.target.value.trim() } }); Market.setKey(state.settings.market.cgKey); refresh(true); } });
   return h('div', null,
+    group('Motyw kolorystyczny', [
+      h('div', { class: 'palette-grid', role: 'radiogroup', 'aria-label': 'Motyw kolorystyczny' }, Core.PALETTES.map((x) => h('button', {
+        class: 'palette-opt' + (s.ui.palette === x.id ? ' on' : ''), role: 'radio', 'aria-checked': s.ui.palette === x.id ? 'true' : 'false', title: x.label,
+        onclick: async () => { await saveSettings({ ui: { palette: x.id } }, true); render(true); }
+      }, h('span', { class: 'pal-dot', 'data-pal': x.id, style: { background: x.color } }), h('span', { class: 'pal-name' }, x.label))))
+    ], 'Zmienia kolor wyróżniający i odcień tła. Jasny / ciemny wygląd wybierasz w ustawieniach okna lub według systemu.'),
     group('Notowania', [
       row('Waluta', select(Object.entries(Core.CURRENCIES).map(([value, c]) => ({ value, label: c.label })), s.market.currency, async (v) => {
         await saveSettings({ market: { currency: v } }, true); state.market = {}; state.consensus = {}; state.top = null; state.rates = null; Market.clearCache(); state.conn.lastUpdate = 0; refresh(true); render();
@@ -1121,18 +932,17 @@ function settingsGeneral() {
         { value: 'minimize', label: 'minimalizuje okno na pasek zadań' },
         { value: 'quit', label: 'kończy aplikację' }
       ], s.window.closeAction, (v) => saveSettings({ window: { closeAction: v } }, true)), { icon: 'eye', color: 'var(--indigo)', hint: 'Schowaną aplikację otworzysz ikoną w zasobniku lub uruchamiając ją ponownie; zakończysz z menu ikony.' }),
-      row('Uruchamiaj z systemem', toggle(!!s.window.autostart, async (v) => { await saveSettings({ window: { autostart: v } }, true); render(true); }), { icon: 'power', color: 'var(--green)', hint: 'Aplikacja wczytuje się po zalogowaniu do systemu i od razu pobiera notowania oraz pilnuje alertów.' }),
+      row('Uruchamiaj z systemem', toggle(!!s.window.autostart, async (v) => { await saveSettings({ window: { autostart: v } }, true); render(true); }), { icon: 'power', color: 'var(--green)', hint: 'Aplikacja wczytuje się po zalogowaniu do systemu i od razu pobiera notowania oraz sprawdza alerty.' }),
       s.window.autostart ? row('Start w tle', toggle(s.window.startHidden !== false, (v) => saveSettings({ window: { startHidden: v } }, true)), { icon: 'eye', color: 'var(--indigo)', hint: 'Po uruchomieniu z systemem okno nie wyskakuje – aplikacja czeka w zasobniku (bez zasobnika: na pasku zadań).' }) : null,
       row('Wygląd', segmented([{ value: 'system', label: 'Systemowy' }, { value: 'light', label: 'Jasny' }, { value: 'dark', label: 'Ciemny' }], s.ui.theme, (v) => saveSettings({ ui: { theme: v } }, true)), { icon: 'moon', color: 'var(--purple)' })
     ], state.info.hasTray ? null : 'Na tym systemie nie udało się utworzyć ikony w zasobniku – okno będzie minimalizowane na pasek zadań.') : null,
     platform.desktop ? browserGroup() : null,
     group('Przenoszenie danych', [
-      row('Zapisz portfel do pliku', h('button', { class: 'btn', onclick: exportFile }, iconEl('download', 14), 'Eksportuj'), { icon: 'download', color: 'var(--accent)', hint: 'Plik zawiera wpisy (ilości, daty, ceny), obserwowane i alerty.' }),
+      row('Zapisz portfel do pliku', h('button', { class: 'btn', onclick: exportFile }, iconEl('download', 14), 'Eksportuj'), { icon: 'download', color: 'var(--accent)', hint: 'Plik zawiera wpisy (ilości, daty, ceny) i obserwowane.' }),
       row('Wczytaj portfel z pliku', h('button', { class: 'btn', onclick: importFile }, iconEl('upload', 14), 'Importuj'), { icon: 'upload', color: 'var(--green)', hint: 'Ten sam plik działa na Linuksie i na Androidzie.' })
     ], platform.desktop ? null : 'Na Androidzie po eksporcie otworzy się okno udostępniania – zapisz plik w Plikach lub na Dysku albo wyślij go na inne urządzenie.'),
-    group('Alerty', [
-      row('Powiadomienia systemowe', toggle(s.alerts.notifications, async (v) => { await saveSettings({ alerts: { notifications: v } }, true); if (v && platform.requestNotifications) platform.requestNotifications(); }), { icon: 'bell', color: 'var(--red)', hint: 'Powiadomienie pojawia się, gdy uruchomi się alert cenowy.' }),
-      row('Sprawdź powiadomienia', h('button', { class: 'btn', onclick: async () => { const ok = await platform.notify('CoinTracko', 'Tak będzie wyglądało powiadomienie o alercie.').catch(() => false); if (!ok) toast('System nie pozwolił wyświetlić powiadomienia – sprawdź uprawnienia aplikacji.', 'error', 6000); } }, 'Wyślij testowe'), { icon: 'bolt', color: 'var(--teal)' })
+    group('Powiadomienia', [
+      row('Sprawdź powiadomienia', h('button', { class: 'btn', onclick: async () => { if (platform.requestNotifications) platform.requestNotifications(); const ok = await platform.notify('CoinTracko', 'Tak będzie wyglądało powiadomienie o ważnym alercie.').catch(() => false); if (!ok) toast('System nie pozwolił wyświetlić powiadomienia – sprawdź uprawnienia aplikacji.', 'error', 6000); } }, 'Wyślij testowe'), { icon: 'bolt', color: 'var(--teal)', hint: 'Powiadomienia o poważnych alertach włączysz w Ustawieniach → Źródła i wiadomości.' })
     ]));
 }
 
@@ -1176,7 +986,7 @@ function settingsAbout() {
       row('Wersja', h('span', { class: 'muted' }, state.info.version || '—'), { icon: 'info', color: 'var(--accent)' }),
       row('Notowania', h('button', { class: 'btn sm', onclick: () => platform.openExternal('https://www.coingecko.com') }, 'CoinGecko', iconEl('external', 12)), { icon: 'globe', color: 'var(--green)' }),
       platform.desktop ? row('Folder danych', h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' } }, h('span', { class: 'path' }, state.info.dataDir), h('button', { class: 'btn sm', onclick: () => platform.openDataDir() }, 'Otwórz')), { icon: 'folder', color: 'var(--orange)' }) : null
-    ], 'Portfel, obserwowane i alerty są zapisywane wyłącznie na tym urządzeniu. Notowania mają charakter informacyjny i nie stanowią porady inwestycyjnej.'));
+    ], 'Aktywa i obserwowane są zapisywane wyłącznie na tym urządzeniu. Notowania mają charakter informacyjny i nie stanowią porady inwestycyjnej.'));
 }
 
 init().catch((e) => { console.error(e); document.getElementById('content').textContent = 'Błąd uruchamiania: ' + (e.message || e); });

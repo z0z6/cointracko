@@ -6,6 +6,7 @@
   let override = null; // tryb deweloperski (dane przykładowe)
   const local = new Map(); // pamięć podręczna dla połączeń bezpośrednich
   const TIMEOUT_MS = 20000;
+  let freshUntil = 0; // do tego czasu zapytania omijają pamięć podręczną (wymuszona aktualizacja)
 
   async function direct(req) {
     const method = String(req.method || 'GET').toUpperCase();
@@ -15,7 +16,7 @@
     const ttl = req.ttl == null ? 25000 : req.ttl;
     const id = `${method} ${req.url} ${body || ''} ${as}`;
     const hit = local.get(id);
-    if (hit && Date.now() - hit.at < ttl) return hit.value;
+    if (!req.fresh && hit && Date.now() - hit.at < ttl) return hit.value;
     const headers = { accept: as === 'json' ? 'application/json' : '*/*' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (req.key && /^https:\/\/api\.coingecko\.com\//.test(req.url)) headers['x-cg-demo-api-key'] = String(req.key);
@@ -34,6 +35,7 @@
 
   // → { status, data | text }; rzuca błąd tylko przy braku połączenia
   function request(req) {
+    if (freshUntil > Date.now() && !req.fresh) req = { ...req, fresh: true };
     if (override) return override(req);
     if (window.api && window.api.fetchRemote) return window.api.fetchRemote(req);
     if (window.platform && window.platform.fetchRemote) return window.platform.fetchRemote(req);
@@ -52,5 +54,5 @@
     return r.text;
   }
 
-  window.Remote = { request, json, text, setTransport: (fn) => { override = fn; local.clear(); } };
+  window.Remote = { request, json, text, forceFresh: (ms = 25000) => { freshUntil = Date.now() + ms; }, setTransport: (fn) => { override = fn; local.clear(); } };
 })();

@@ -196,7 +196,7 @@ function registerIpc() {
 
   handle('state:get', () => ({ settings: store.settings, data: store.data }));
   handle('settings:set', (raw) => {
-    const patch = pickSettingsPatch(raw, ['ui', 'market', 'window', 'alerts', 'intel', 'browser']); // tylko znane sekcje i pola
+    const patch = pickSettingsPatch(raw, ['ui', 'market', 'window', 'intel', 'browser']); // tylko znane sekcje i pola
     const s = store.updateSettings(patch);
     if (patch.ui && patch.ui.theme) nativeTheme.themeSource = s.ui.theme;
     if (patch.browser) server.apply(s.browser);
