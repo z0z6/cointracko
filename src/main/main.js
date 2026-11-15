@@ -6,26 +6,42 @@ const fs = require('fs');
 const { Store } = require('./store');
 const { BrowserServer } = require('./web-server');
 const autostart = require('./autostart');
+const { Remote } = require('./remote');
+const { pickSettingsPatch } = require('../renderer/core');
 
 const APP_NAME = 'CoinTracko';
 app.setName(APP_NAME);
 app.commandLine.appendSwitch('lang', 'pl');
+// (okno ma sandbox: true w webPreferences; app.enableSandbox() nie łączy się z --no-sandbox z wrappera AppImage i zawiesza usługę sieci)
+app.commandLine.appendSwitch('disable-features', 'MediaRouter,Translate,OptimizationHints'); // mniej zbędnych usług w tle
+app.disableHardwareAcceleration(); // bez procesu GPU: mniej pamięci i prądu (interfejs jest lekki)
+// Funkcje deweloperskie (zrzuty ekranu, dane przykładowe) działają tylko w wersji niespakowanej.
+const DEV = !app.isPackaged;
 if (process.platform === 'win32') app.setAppUserModelId('pl.z0z6.cointracko');
 
 const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
 const dataDir = process.env.COINTRACKO_DATA_DIR || (portableDir ? path.join(portableDir, 'CoinTracko - dane') : path.join(app.getPath('userData'), 'dane'));
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-}
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
 
 let win = null;
 let tray = null;
 let quitting = false;
-let store, server;
+let store, server, remote;
 
 function emit(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+// Do przeglądarki systemowej trafiają wyłącznie poprawne adresy https (bez danych logowania w adresie).
+function openExternalSafe(raw) {
+  try {
+    const u = new URL(String(raw));
+    if (u.protocol !== 'https:' || u.username || u.password || String(raw).length > 2000) return false;
+    shell.openExternal(u.toString());
+    return true;
+  } catch (_) { return false; }
 }
 
 function iconPath() { return path.join(__dirname, '..', 'assets', 'icon.png'); }
@@ -55,18 +71,22 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      spellcheck: false,
+      devTools: DEV,
       backgroundThrottling: false // notowania i alerty działają także, gdy okno jest schowane
     }
   });
   win.setMenuBarVisibility(false);
-  if (process.env.COINTRACKO_SIZE) { const [w, hh] = process.env.COINTRACKO_SIZE.split('x').map(Number); win.setSize(w, hh); }
+  if (DEV && process.env.COINTRACKO_SIZE) { const [w, hh] = process.env.COINTRACKO_SIZE.split('x').map(Number); win.setSize(w, hh); }
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   win.once('ready-to-show', () => {
     if (!process.argv.includes('--hidden')) { win.show(); return; }
     // start z systemem: okno zostaje schowane w zasobniku; bez zasobnika minimalizujemy je na pasek zadań
     if (!tray) { win.showInactive(); win.minimize(); }
   });
-  if (process.env.COINTRACKO_SHOTS) {
+  if (DEV && process.env.COINTRACKO_SHOTS) {
     win.webContents.on('console-message', (...a) => { const e = a[0]; console.log('[renderer]', e && e.message ? e.message : a.slice(1).join(' ')); });
     win.webContents.once('did-finish-load', () => devScreenshots(process.env.COINTRACKO_SHOTS));
   }
@@ -89,8 +109,9 @@ function createWindow() {
   win.on('restore', () => emit('app:shown'));
   win.on('maximize', () => emit('window:state', { maximized: true }));
   win.on('unmaximize', () => emit('window:state', { maximized: false }));
-  win.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) shell.openExternal(url); return { action: 'deny' }; });
+  win.webContents.setWindowOpenHandler(({ url }) => { openExternalSafe(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.on('will-redirect', (e) => e.preventDefault());
 }
 
 // Tryb deweloperski: zrzuty ekranu widoków (COINTRACKO_SHOTS=katalog, COINTRACKO_STEPS="nazwa=<JS>,…")
@@ -136,8 +157,16 @@ function createTray() {
 
 // ─────────────────────────── IPC ───────────────────────────
 
+// Polecenia przyjmujemy tylko od okna aplikacji (jego główna ramka, wczytana z pliku interfejsu).
+function trusted(e) {
+  try {
+    return !!win && !win.isDestroyed() && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame && /^file:\/\//.test(e.senderFrame.url);
+  } catch (_) { return false; }
+}
+
 function handle(channel, fn) {
-  ipcMain.handle(channel, async (_e, ...args) => {
+  ipcMain.handle(channel, async (e, ...args) => {
+    if (!trusted(e)) return { ok: false, error: 'Niedozwolone źródło polecenia.' };
     try { return { ok: true, data: await fn(...args) }; } catch (err) { return { ok: false, error: err.message || String(err) }; }
   });
 }
@@ -148,10 +177,11 @@ function registerIpc() {
     platform: process.platform,
     dataDir,
     hasTray: !!tray,
-    mock: !!process.env.COINTRACKO_MOCK
+    mock: DEV && !!process.env.COINTRACKO_MOCK
   }));
 
   handle('window:control', (action) => {
+    if (!['close', 'minimize', 'maximize', 'state'].includes(action)) return false;
     if (!win) return false;
     if (action === 'close') { win.close(); return false; }
     if (action === 'minimize') { win.minimize(); return win.isMaximized(); }
@@ -165,16 +195,17 @@ function registerIpc() {
   });
 
   handle('state:get', () => ({ settings: store.settings, data: store.data }));
-  handle('settings:set', (patch) => {
+  handle('settings:set', (raw) => {
+    const patch = pickSettingsPatch(raw, ['ui', 'market', 'window', 'alerts', 'intel', 'browser']); // tylko znane sekcje i pola
     const s = store.updateSettings(patch);
-    if (patch && patch.ui && patch.ui.theme) nativeTheme.themeSource = patch.ui.theme;
-    if (patch && patch.browser) server.apply(s.browser);
-    if (patch && patch.window && ('autostart' in patch.window || 'startHidden' in patch.window)) autostart.apply(app, s.window);
+    if (patch.ui && patch.ui.theme) nativeTheme.themeSource = s.ui.theme;
+    if (patch.browser) server.apply(s.browser);
+    if (patch.window && ('autostart' in patch.window || 'startHidden' in patch.window)) autostart.apply(app, s.window);
     return s;
   });
   handle('data:set', (data) => store.setData(data));
-  // Notowania pobiera proces główny (okno nie potrzebuje wtedy zgody CORS serwera) – wyłącznie z API CoinGecko.
-  handle('net:getJson', (url, key) => server.getJson(url, key));
+  // Zapytania zdalne wykonuje proces główny (bez ograniczeń CORS) – wyłącznie do adresów z listy dozwolonych.
+  handle('net:fetch', (req) => remote.request(req || {}));
   handle('notify', (title, body) => notify(String(title || APP_NAME).slice(0, 120), String(body || '').slice(0, 300)));
   handle('tray:info', (text) => { if (tray) tray.setToolTip(String(text || APP_NAME).slice(0, 120)); return true; });
 
@@ -182,32 +213,39 @@ function registerIpc() {
   handle('browser:open', () => { const st = server.status(); if (!st.running) throw new Error('Podgląd w przeglądarce jest wyłączony.'); shell.openExternal(st.url); return true; });
 
   handle('file:save', async (name, text) => {
-    const safe = String(name || 'cointracko.json').replace(/[\\/:*?"<>|]/g, '-');
+    if (typeof text !== 'string' || text.length > 8 * 1024 * 1024) throw new Error('Plik jest zbyt duży.');
+    const safe = String(name || 'cointracko.json').replace(/[\\/:*?"<>|]/g, '-').slice(0, 120);
     const r = await dialog.showSaveDialog(win, { title: 'Zapisz plik portfela', defaultPath: path.join(app.getPath('documents'), safe), filters: [{ name: 'Plik CoinTracko (JSON)', extensions: ['json'] }] });
     if (r.canceled || !r.filePath) return null;
     fs.writeFileSync(r.filePath, String(text), 'utf8');
     return r.filePath;
   });
-  handle('shell:openExternal', (url) => { if (/^https:\/\//.test(url)) shell.openExternal(url); return true; });
+  handle('shell:openExternal', (url) => openExternalSafe(url));
   handle('shell:openDataDir', () => shell.openPath(dataDir));
 }
 
 app.on('second-instance', () => showWindow());
 
+// Dodatkowe zabezpieczenia wszystkich okien: brak <webview>, nawigacji i uprawnień (kamera, lokalizacja itp.).
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (ev) => ev.preventDefault());
+  contents.on('will-navigate', (ev) => ev.preventDefault());
+});
+
 app.whenReady().then(() => {
+  if (!gotLock) return;
+  const { session } = require('electron');
+  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
   store = new Store(dataDir);
-  nativeTheme.themeSource = process.env.COINTRACKO_THEME || store.settings.ui.theme || 'system';
+  nativeTheme.themeSource = (DEV && process.env.COINTRACKO_THEME) || store.settings.ui.theme || 'system';
   try { fs.unlinkSync(path.join(dataDir, 'klucz.bin')); } catch (_) { /* brak – dawny, zapisany klucz API */ }
+  remote = new Remote((url, init) => net.fetch(url, init));
   server = new BrowserServer({
     getState: () => ({ settings: store.settings, data: store.data, rev: store.rev }),
     setData: (data) => { store.setData(data); emit('data:external', store.data); },
-    setSettings: (patch) => { const st = store.updateSettings(patch); if (patch && patch.ui && patch.ui.theme) nativeTheme.themeSource = patch.ui.theme; emit('settings:external', st); return st; },
-    fetchJson: async (url, key) => {
-      const headers = { accept: 'application/json' };
-      if (key) headers['x-cg-demo-api-key'] = String(key);
-      const res = await net.fetch(url, { headers, signal: AbortSignal.timeout(20000) });
-      return { status: res.status, data: res.ok ? await res.json() : null };
-    },
+    setSettings: (patch) => { const st = store.updateSettings(patch); if (patch && patch.ui) nativeTheme.themeSource = st.ui.theme; emit('settings:external', st); return st; },
+    remote,
     root: path.join(__dirname, '..', 'renderer'),
     iconFile: iconPath(),
     version: app.getVersion()

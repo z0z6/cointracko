@@ -11,7 +11,7 @@
     constructor(message, kind) { super(message); this.kind = kind; }
   }
 
-  async function getJson(path, params = {}, { ttl = 0, timeoutMs = 20000 } = {}) {
+  async function getJson(path, params = {}, { ttl = 0 } = {}) {
     const qs = Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
     const url = `${BASE}${path}${qs ? '?' + qs : ''}`;
     const hit = cache.get(url);
@@ -21,23 +21,10 @@
       cache.set(url, { at: Date.now(), data });
       return data;
     }
-    const headers = apiKey ? { 'x-cg-demo-api-key': apiKey, accept: 'application/json' } : { accept: 'application/json' };
     const offline = (e) => new MarketError(e && e.name === 'AbortError' ? 'Serwer notowań nie odpowiada (przekroczono czas oczekiwania).' : 'Brak połączenia z internetem lub serwerem notowań.', 'network');
     let status;
     let body;
-    const bridge = window.api && window.api.getJson ? window.api.getJson : window.platform && window.platform.getJson;
-    if (bridge) {
-      // komputer (i przeglądarka otwarta z aplikacji): zapytanie wykonuje proces główny aplikacji (bez ograniczeń CORS)
-      try { const r = await bridge(url, apiKey); status = r.status; body = r.data; } catch (e) { throw offline(e); }
-    } else {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-      try {
-        const res = await fetch(url, { signal: ctrl.signal, headers });
-        status = res.status;
-        body = res.ok ? await res.json() : null;
-      } catch (e) { throw offline(e); } finally { clearTimeout(timer); }
-    }
+    try { const r = await Remote.request({ url, key: apiKey, as: 'json', ttl: ttl || undefined }); status = r.status; body = r.data; } catch (e) { throw offline(e); }
     if (status === 429) {
       if (hit) return hit.data; // przy limicie zapytań pokaż ostatnie znane dane
       throw new MarketError('Serwer notowań chwilowo ogranicza liczbę zapytań. Spróbuję ponownie za chwilę.', 'rate');

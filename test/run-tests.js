@@ -9,6 +9,12 @@ const Core = require('../src/renderer/core');
 const { Store } = require('../src/main/store');
 const { BrowserServer } = require('../src/main/web-server');
 const Autostart = require('../src/main/autostart');
+const { Remote } = require('../src/main/remote');
+const Allow = require('../src/renderer/allowlist');
+const Oracles = require('../src/renderer/oracles');
+const PriceHistory = require('../src/renderer/history');
+const Intel = require('../src/renderer/intel');
+const KVCache = require('../src/renderer/cache');
 
 let passed = 0;
 function test(name, fn) {
@@ -244,6 +250,30 @@ test('niceTicks i downsample', () => {
   assert.deepStrictEqual(d[99], [999, 999]);
 });
 
+console.log('Bezpieczeństwo danych');
+test('sanitizeData: prototyp, identyfikatory, obrazy, limity, pola alertów', () => {
+  const evil = JSON.parse('{"watch":[{"id":"__proto__","name":"x"},{"id":"bitcoin","symbol":"btc","name":"B","image":"javascript:alert(1)"},{"id":"eth","image":"https://evil.example/a.png"},{"id":"ok","image":"https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png?1696"}],"lots":{"__proto__":[{"amount":1}],"bitcoin":[{"amount":1,"price":5}],"BAD ID":[{"amount":1}]},"holdings":{"constructor":5,"<script>":3},"alerts":[{"coinId":"bitcoin","type":"above","value":1,"evil":"x","__proto__":{"p":1}}],"alertLog":[{"title":"t","body":"b","x":{"deep":1}},5],"hints":{"seeded":true,"junk":1}}');
+  const d = Core.sanitizeData(evil);
+  assert.deepStrictEqual(d.watch.map((w) => w.id), ['bitcoin', 'eth', 'ok']);
+  assert.deepStrictEqual(d.watch.map((w) => w.image), ['', '', 'https://coin-images.coingecko.com/coins/images/1/large/bitcoin.png?1696'], 'tylko obrazy z CoinGecko');
+  assert.deepStrictEqual(Object.keys(d.lots), ['bitcoin']); assert.strictEqual(Object.getPrototypeOf(d.lots), Object.prototype);
+  assert.deepStrictEqual(Object.keys(d.holdings), ['bitcoin']);
+  assert.ok(!('evil' in (d.alerts[0] || {})) && !('p' in d.alerts[0]), 'pola alertu z białej listy'); assert.deepStrictEqual(Object.keys(d.alertLog[0]).sort(), ['at', 'body', 'coinId', 'title']);
+  assert.deepStrictEqual(d.hints, { seeded: true });
+  const big = Core.sanitizeData({ watch: Array.from({ length: 2000 }, (_, i) => ({ id: 'c' + i })), lots: { bitcoin: Array.from({ length: 9000 }, () => ({ amount: 1 })) } });
+  assert.strictEqual(big.watch.length, 500); assert.strictEqual(big.lots.bitcoin.length, 5000);
+});
+test('deepMerge i ustawienia: brak zatrucia prototypu, walidacja zakresów i typów', () => {
+  const m = Core.deepMerge({ a: { b: 1 } }, JSON.parse('{"__proto__":{"x":1},"a":{"__proto__":{"y":1},"c":2},"constructor":{"prototype":{"z":1}}}'));
+  assert.strictEqual({}.x, undefined); assert.strictEqual(m.x, undefined); assert.strictEqual(m.a.y, undefined); assert.strictEqual(m.a.c, 2);
+  const s = Core.sanitizeSettings({ ui: { theme: 'neon' }, market: { currency: 'xyz', refreshSec: 1, cgKey: 'a b<c>', tolerancePct: 99, sources: { pyth: 'yes', bogus: true } }, window: { closeAction: 'explode', autostart: 'x' }, browser: { port: 80, enabled: 1 }, intel: { minSeverity: 9 }, ai: { x: 1 }, import: {} });
+  assert.deepStrictEqual([s.ui.theme, s.market.currency, s.market.refreshSec, s.market.cgKey, s.market.tolerancePct, s.market.sources.pyth, 'bogus' in s.market.sources], ['system', 'usd', 60, '', 2, true, false]);
+  assert.deepStrictEqual([s.window.closeAction, s.window.autostart, s.browser.port, s.browser.enabled, s.intel.minSeverity, 'ai' in s, 'import' in s], ['tray', true, 47820, false, 4, false, false]);
+  assert.deepStrictEqual(Core.sanitizeSettings(null), Core.sanitizeSettings({}));
+  assert.deepStrictEqual(Core.pickSettingsPatch({ market: { currency: 'pln', hack: 1 }, window: { closeAction: 'quit' }, nope: {} }, ['market']), { market: { currency: 'pln' } });
+  assert.strictEqual(Core.sanitizeSettings({ market: { cgKey: 'CG-abc_123.x-y' } }).market.cgKey, 'CG-abc_123.x-y');
+});
+
 console.log('Magazyn danych');
 test('Store: zapis, odczyt, scalanie ustawień, odporność na uszkodzony plik', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cointracko-test-'));
@@ -289,6 +319,203 @@ test('autostart: polecenie, wpis XDG, zapis i usunięcie', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+
+console.log('Lista dozwolonych adresów i klient zapytań');
+test('allowlist: tylko HTTPS, znane hosty i ścieżki, RPC tylko eth_call', () => {
+  const ok = (u, m, b) => Allow.isAllowed(u, m, b);
+  assert.ok(ok('https://api.coingecko.com/api/v3/coins/markets?x=1'));
+  assert.ok(!ok('http://api.coingecko.com/api/v3/coins/markets'), 'http');
+  assert.ok(!ok('https://api.coingecko.com.evil.com/api/v3/coins'), 'podszycie domeny');
+  assert.ok(!ok('https://evil.com/api/v3/coins'));
+  assert.ok(!ok('https://api.coingecko.com/other'));
+  assert.ok(!ok('https://user:p@api.coingecko.com/api/v3/ping'), 'dane logowania w adresie');
+  assert.ok(!ok('https://api.coingecko.com:8443/api/v3/ping'), 'inny port');
+  assert.ok(ok('https://ethereum-rpc.publicnode.com/', 'POST', '[{"method":"eth_call"}]'));
+  assert.ok(!ok('https://ethereum-rpc.publicnode.com/', 'POST', '[{"method":"eth_sendRawTransaction"}]'));
+  assert.ok(!ok('https://ethereum-rpc.publicnode.com/', 'POST', '[{"method":"eth_call"},{"method":"eth_sendTransaction"}]'));
+  assert.ok(!ok('https://ethereum-rpc.publicnode.com/', 'GET'));
+  assert.ok(!ok('https://api.coingecko.com/api/v3/coins/markets', 'POST'));
+});
+const remoteTest = async () => {
+  let calls = 0; let lastInit = null;
+  const mk = (impl) => new Remote(async (url, init) => { calls++; lastInit = init; return impl(url, init); });
+  const json = (o, extra = {}) => Object.assign(new Response(JSON.stringify(o), { status: 200 }), extra);
+  let r = mk(() => json({ a: 1 }));
+  const url = 'https://api.coingecko.com/api/v3/ping';
+  assert.deepStrictEqual((await r.request({ url, key: 'K1' })).data, { a: 1 });
+  await r.request({ url, key: 'K1' }); assert.strictEqual(calls, 1, 'pamięć podręczna');
+  assert.strictEqual(lastInit.headers['x-cg-demo-api-key'], 'K1');
+  await assert.rejects(() => r.request({ url: 'https://example.com/' }), /Niedozwolony/);
+  await r.request({ url: 'https://api.coinbase.com/v2/exchange-rates?currency=USD', key: 'SECRET' });
+  assert.strictEqual(lastInit.headers['x-cg-demo-api-key'], undefined, 'klucz CoinGecko nie wycieka do innych serwisów');
+  // równoległe identyczne zapytania są łączone
+  calls = 0; r = mk(async () => { await new Promise((x) => setTimeout(x, 20)); return json({ n: 1 }); });
+  await Promise.all([r.request({ url }), r.request({ url }), r.request({ url })]); assert.strictEqual(calls, 1);
+  // przekierowania: na niedozwolony adres – odrzucone zanim zapytanie zostanie wysłane; na dozwolony – obsłużone, a klucz nie wycieka
+  const hops = [];
+  r = mk((u, init) => { hops.push([u, init.headers['x-cg-demo-api-key']]); return u.includes('coinbase') ? json({ ok: 1 }) : new Response(null, { status: 302, headers: { location: 'https://api.coinbase.com/v2/exchange-rates' } }); });
+  assert.deepStrictEqual((await r.request({ url, key: 'SECRET' })).data, { ok: 1 });
+  assert.deepStrictEqual(hops.map((h2) => h2[1]), ['SECRET', undefined], 'klucz CoinGecko nie jest wysyłany po przekierowaniu do innego serwisu');
+  calls = 0; r = mk(() => new Response(null, { status: 301, headers: { location: 'https://evil.example/x' } }));
+  await assert.rejects(() => r.request({ url }), /przekierowa/); assert.strictEqual(calls, 1, 'drugie zapytanie nie zostało wysłane');
+  r = mk(() => new Response(null, { status: 302, headers: { location: url } }));
+  await assert.rejects(() => r.request({ url }), /przekierowań/);
+  // zbyt duża odpowiedź
+  r = mk(() => new Response('x'.repeat(5 * 1024 * 1024), { status: 200 }));
+  await assert.rejects(() => r.request({ url }), /zbyt duża/);
+  // błąd HTTP nie jest zapamiętywany; niepoprawny JSON
+  calls = 0; r = mk(() => new Response('', { status: 429 }));
+  assert.strictEqual((await r.request({ url })).status, 429); await r.request({ url }); assert.strictEqual(calls, 2);
+  r = mk(() => new Response('<html>', { status: 200 }));
+  await assert.rejects(() => r.request({ url }), /niepoprawną/);
+};
+remoteTest().then(() => { passed++; console.log('  ✓ Remote: lista adresów, klucz tylko dla CoinGecko, limity, przekierowania'); }, (e) => { console.error('  ✗ Remote\n    ' + (e.stack || e.message)); process.exitCode = 1; });
+
+console.log('Źródła cen (oracle)');
+test('parsery: Pyth, RedStone, CryptoCompare, Binance, Coinbase, Chainlink', () => {
+  const id = 'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43';
+  assert.deepStrictEqual(Oracles.parsePythFeeds([{ id, attributes: { asset_type: 'Crypto', base: 'BTC', quote_currency: 'USD', symbol: 'Crypto.BTC/USD' } }, { id: 'zz', attributes: {} }, { id: id.replace('e', 'f'), attributes: { asset_type: 'FX', base: 'EUR', quote_currency: 'USD' } }]), { BTC: id });
+  const p = Oracles.parsePythPrices({ parsed: [{ id, price: { price: '6500012345678', conf: '1000000', expo: -8, publish_time: 1700000000 } }, { id: 'a'.repeat(64), price: { price: '100', conf: '50', expo: 0, publish_time: 1 } }] });
+  near(p[id].price, 65000.12345678); assert.strictEqual(Object.keys(p).length, 1, 'wycena z szerokim przedziałem ufności odrzucona');
+  assert.deepStrictEqual(Oracles.parseRedstone({ BTC: { value: 65000, timestamp: 5 }, X: { value: 0 } }), { BTC: { price: 65000, ts: 5 } });
+  assert.deepStrictEqual(Oracles.parseRedstone([{ symbol: 'eth', value: 3000, timestamp: 7 }]), { ETH: { price: 3000, ts: 7 } });
+  assert.deepStrictEqual(Oracles.parseCryptoCompareMulti({ BTC: { USD: 65000 }, BAD: { USD: 0 } }), { BTC: 65000 });
+  assert.deepStrictEqual(Oracles.parseCryptoCompareMulti({ Response: 'Error' }), {});
+  assert.deepStrictEqual(Oracles.parseBinance([{ symbol: 'BTCUSDT', price: '65000.5' }, { symbol: 'ETHBTC', price: '0.05' }]), { BTC: 65000.5 });
+  const cb = Oracles.parseCoinbaseRates({ data: { rates: { BTC: '0.00001538', PLN: '4.05' } } });
+  near(cb.crypto.BTC, 1 / 0.00001538); near(cb.fiat.PLN, 4.05);
+  const dir = Oracles.parseChainlinkDirectory([{ name: 'BTC / USD', proxyAddress: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', decimals: 8, feedCategory: 'verified' }, { name: 'ETH / BTC', proxyAddress: '0x1' }]);
+  assert.deepStrictEqual(Object.keys(dir), ['BTC']);
+  const w = (n) => BigInt(n).toString(16).padStart(64, '0');
+  const d = Oracles.decodeRoundData('0x' + w(1) + w(6500012345678n) + w(1) + w(1700000000) + w(1), 8);
+  near(d.price, 65000.12345678); assert.strictEqual(d.ts, 1700000000000);
+  assert.strictEqual(Oracles.decodeRoundData('0x' + w(1) + w(0) + w(1) + w(1) + w(1), 8), null, 'zerowa odpowiedź');
+  assert.strictEqual(Oracles.decodeRoundData('0x12', 8), null);
+});
+test('konsensus: średnia ze zgodnych, odrzucanie odchyleń i nieaktualnych oracle', () => {
+  const now = Date.now();
+  const c = Oracles.consensus([{ source: 'pyth', price: 100, ts: now }, { source: 'redstone', price: 100.4, ts: now }, { source: 'chainlink', price: 99.8, ts: now }, { source: 'coingecko', price: 130 }], { now });
+  near(c.price, 100.06666666666666); assert.deepStrictEqual(c.outliers, ['coingecko']); assert.strictEqual(c.confidence, 'high'); assert.strictEqual(c.oracleCount, 3);
+  const stale = Oracles.consensus([{ source: 'pyth', price: 100, ts: now - 3 * 3600000 }, { source: 'coinbase', price: 101 }, { source: 'binance', price: 100.5 }], { now });
+  assert.deepStrictEqual(stale.stale, ['pyth']); near(stale.price, 100.75); assert.strictEqual(stale.confidence, 'medium');
+  const conflict = Oracles.consensus([{ source: 'coinbase', price: 100 }, { source: 'binance', price: 120 }], { now });
+  assert.strictEqual(conflict.conflict, true); assert.strictEqual(conflict.confidence, 'low');
+  const one = Oracles.consensus([{ source: 'coingecko', price: 5 }], { now }); assert.strictEqual(one.inliers, 1); assert.strictEqual(one.confidence, 'low');
+  assert.strictEqual(Oracles.consensus([], { now }), null);
+  assert.strictEqual(Oracles.consensus([{ source: 'coinbase', price: NaN }, { source: 'binance', price: -1 }], { now }), null, 'niepoprawne ceny odrzucone');
+  const allStale = Oracles.consensus([{ source: 'pyth', price: 100, ts: now - 9 * 3600000 }], { now }); assert.strictEqual(allStale.price, null);
+});
+const oracleFetchTest = async () => {
+  const urls = [];
+  const remote = { json: async (url, o = {}) => {
+    urls.push(url);
+    if (url.includes('hermes') && url.includes('price_feeds')) return [{ id: 'a'.repeat(64), attributes: { asset_type: 'Crypto', base: 'BTC', quote_currency: 'USD', symbol: 'Crypto.BTC/USD' } }];
+    if (url.includes('hermes')) return { parsed: [{ id: 'a'.repeat(64), price: { price: '6500000000000', conf: '100000', expo: -8, publish_time: Math.floor(Date.now() / 1000) } }] };
+    if (url.includes('redstone')) return { BTC: { value: 65100, timestamp: Date.now() } };
+    if (url.includes('pricemulti')) return { BTC: { USD: 64900 } };
+    if (url.includes('binance')) return [{ symbol: 'BTCUSDT', price: '65050' }];
+    if (url.includes('coinbase')) return { data: { rates: { BTC: String(1 / 65000), PLN: '4' } } };
+    if (url.includes('reference-data')) throw new Error('404');
+    if (url.includes('rpc') || url.includes('publicnode')) { const w = (n) => BigInt(n).toString(16).padStart(64, '0'); return o.body.map((r) => ({ id: r.id, result: '0x' + w(1) + w(6490000000000n) + w(1) + w(Math.floor(Date.now() / 1000)) + w(1) })); }
+    throw new Error('nieoczekiwany ' + url);
+  } };
+  const o = Oracles.create({ remote, cache: null });
+  const res = await o.fetchAll([{ id: 'bitcoin', symbol: 'btc' }], { currency: 'pln', enabled: { binance: false } });
+  const srcs = res.byId.bitcoin.map((e) => e.source).sort();
+  assert.deepStrictEqual(srcs, ['chainlink', 'coinbase', 'cryptocompare', 'pyth', 'redstone']);
+  near(res.byId.bitcoin.find((e) => e.source === 'pyth').price, 65000 * 4, 'przeliczenie na PLN');
+  assert.ok(!urls.some((u) => u.includes('binance')), 'wyłączone źródło nie jest odpytywane');
+  // awaria jednego źródła nie psuje reszty
+  const broken = Oracles.create({ remote: { json: async (u, o) => { if (u.includes('redstone')) throw new Error('boom'); return remote.json(u, o); } }, cache: null });
+  const r2 = await broken.fetchAll([{ id: 'bitcoin', symbol: 'btc' }], { currency: 'usd' });
+  assert.ok(r2.errors.redstone && r2.byId.bitcoin.length >= 4);
+};
+oracleFetchTest().then(() => { passed++; console.log('  ✓ pobieranie: równoległe, wyłączanie źródeł, izolacja awarii'); }, (e) => { console.error('  ✗ pobieranie oracle\n    ' + (e.stack || e.message)); process.exitCode = 1; });
+
+console.log('Historia dzienna');
+test('historia: parsery, scalanie, filtr skoków, wartość portfela dzień po dniu', () => {
+  const D = 86400000; const t0 = Date.parse('2024-01-01');
+  const cc = PriceHistory.parseCryptoCompareDaily({ Response: 'Success', Data: { Data: [{ time: t0 / 1000, close: 100 }, { time: t0 / 1000 + 86400, close: 0 }, { time: t0 / 1000 + 2 * 86400, close: 102 }] } });
+  assert.deepStrictEqual(cc, [[t0, 100], [t0 + 2 * D, 102]], 'dni z ceną 0 pominięte');
+  assert.deepStrictEqual(PriceHistory.parseBinanceKlines([[t0, '1', '2', '0.5', '1.5', '10']]), [[t0, 1.5]]);
+  assert.deepStrictEqual(PriceHistory.mergeDaily([[1, 1], [2, 2]], [[2, 9], [3, 3]]), [[1, 1], [2, 9], [3, 3]]);
+  assert.deepStrictEqual(PriceHistory.cleanSpikes([[0, 100], [1, 0.001], [2, 101], [3, 102]]), [[0, 100], [2, 101], [3, 102]]);
+  const mk = (p0, n) => Array.from({ length: n }, (_, i) => [t0 + i * D, p0 + i]);
+  const r = PriceHistory.portfolioDaily({ lots: { a: [{ date: '2024-01-03', type: 'buy', amount: 2 }, { date: '2024-01-05', type: 'sell', amount: 1 }, { date: '', type: 'buy', amount: 0.5 }] }, histories: { a: mk(100, 10) }, mode: 'lots' });
+  assert.deepStrictEqual(r.points.slice(0, 5).map((p) => p[1]), [50, 50.5, 255, 257.5, 156], 'ilość z wpisów obowiązująca danego dnia');
+  const dated = PriceHistory.portfolioDaily({ lots: { a: [{ date: '2024-01-04', type: 'buy', amount: 1 }] }, histories: { a: mk(100, 10) }, mode: 'lots' });
+  assert.strictEqual(dated.points[0][0], t0 + 3 * D, 'wykres zaczyna się od pierwszego zakupu');
+  const c = PriceHistory.portfolioDaily({ amounts: { a: 3, b: 1 }, histories: { a: mk(10, 3) }, mode: 'current' });
+  assert.deepStrictEqual(c.missing, ['b']); assert.deepStrictEqual(c.points.map((p) => p[1]), [30, 33, 36]);
+  const clipped = PriceHistory.portfolioDaily({ amounts: { a: 1 }, histories: { a: mk(10, 10) }, mode: 'current', fromTs: t0 + 5 * D, toTs: t0 + 7 * D });
+  assert.deepStrictEqual(clipped.points.map((p) => p[1]), [15, 16, 17]);
+  assert.strictEqual(PriceHistory.priceOnOrBefore(mk(1, 5), t0 - D), null);
+});
+const historyFetchTest = async () => {
+  const D = 86400000; const today = Math.floor(Date.now() / D) * D; const calls = [];
+  const series = (days, toTs) => { const end = Math.floor(toTs / D) * D; return Array.from({ length: days + 1 }, (_, i) => ({ time: (end - (days - i) * D) / 1000, close: 100 + i })); };
+  const remote = { json: async (url) => { calls.push(url); const u = new URL(url); const lim = Number(u.searchParams.get('limit')); const to = Number(u.searchParams.get('toTs') || 0) * 1000 || Date.now(); return { Response: 'Success', Data: { Data: series(lim, to) } }; } };
+  const cache = KVCache.create(null);
+  const hist = PriceHistory.create({ remote, cache });
+  const first = await hist.daily({ id: 'bitcoin', symbol: 'btc' }, 'usd', 6);
+  assert.ok(first.points.length > 2100, '6 lat dziennych punktów: ' + first.points.length);
+  assert.ok(calls.length >= 2 && calls.length <= 3, 'kilka zapytań: ' + calls.length);
+  for (let i = 1; i < first.points.length; i++) assert.ok(first.points[i][0] > first.points[i - 1][0], 'rosnąco i bez duplikatów');
+  const n = calls.length; await hist.daily({ id: 'bitcoin', symbol: 'btc' }, 'usd', 6);
+  assert.strictEqual(calls.length, n, 'drugi raz z pamięci podręcznej');
+  // zapas: Binance przy awarii CryptoCompare
+  const flaky = PriceHistory.create({ cache: KVCache.create(null), remote: { json: async (url) => {
+    if (url.includes('cryptocompare')) throw new Error('down');
+    const u = new URL(url); const from = Number(u.searchParams.get('startTime'));
+    return Array.from({ length: 5 }, (_, i) => [from + i * D, '1', '1', '1', String(50 + i), '1']);
+  } } });
+  const f = await flaky.daily({ id: 'x', symbol: 'xx' }, 'usd', 1);
+  assert.strictEqual(f.source, 'binance'); assert.ok(f.points.length >= 5);
+};
+historyFetchTest().then(() => { passed++; console.log('  ✓ historia: 6 lat, cache, zapas Binance'); }, (e) => { console.error('  ✗ historia (pobieranie)\n    ' + (e.stack || e.message)); process.exitCode = 1; });
+
+console.log('Wiadomości i anomalie');
+test('klasyfikacja: ton, rodzaje anomalii, zaprzeczenia, plotki', () => {
+  const cl = (t, s = '') => Intel.classify({ title: t, summary: s });
+  assert.strictEqual(cl('Bitcoin ETF approved, institutional adoption surges to record high').tone, 'bullish');
+  assert.strictEqual(cl('Cardano partners with major bank, mainnet upgrade goes live').tone, 'bullish');
+  const crash = cl('Token plunges 40% after exchange delisting'); assert.strictEqual(crash.tone, 'bearish');
+  assert.strictEqual(cl('Ethereum developers announce routine meeting schedule').tone, 'neutral');
+  const hack = cl('Protocol X hacked: attacker drained $80M from bridge'); assert.strictEqual(hack.anomaly.kind, 'hack'); assert.ok(hack.anomaly.severity >= 4); assert.strictEqual(hack.tone, 'bearish');
+  assert.strictEqual(cl('Exchange denies hack rumors, says funds are safe').anomaly, null, 'zaprzeczenie nie jest alarmem');
+  assert.strictEqual(cl('No hack found, audit clean').anomaly, null);
+  const ins = cl('Rumors of insolvency spread as exchange pauses withdrawals'); assert.strictEqual(ins.anomaly.kind, 'insolvency'); assert.strictEqual(ins.anomaly.rumor, true);
+  assert.strictEqual(cl('SEC sues team behind Token Y over alleged fraud and misuse of investor funds').anomaly.kind, 'fraud');
+  assert.strictEqual(cl('Solana network outage halts block production').anomaly.kind, 'network');
+  assert.strictEqual(cl('Whale wallet dumps 10M tokens, devs sell').anomaly.kind, 'dump');
+  assert.strictEqual(cl('Haker włamał się do giełdy, skradziono środki').anomaly.kind, 'hack', 'słownictwo polskie');
+});
+test('RSS: parser, encje, odrzucanie niebezpiecznych odnośników, dopasowanie monet, grupowanie', () => {
+  const now = Date.parse('2026-11-15T12:00:00Z');
+  const xml = '<rss><channel><item><title><![CDATA[Bitcoin hacked? &amp; fears - CoinDesk]]></title><link>https://x.com/a</link><pubDate>Sat, 14 Nov 2026 10:00:00 GMT</pubDate><description>&lt;p&gt;Desc &lt;b&gt;text&lt;/b&gt;&lt;/p&gt;</description><source url="https://coindesk.com">CoinDesk</source></item><item><title>bad</title><link>javascript:alert(1)</link><pubDate>Sat, 14 Nov 2026 10:00:00 GMT</pubDate></item><item><title>no date</title><link>https://x.com/b</link></item></channel></rss>';
+  const items = Intel.parseRss(xml, { now });
+  assert.strictEqual(items.length, 1); assert.strictEqual(items[0].title, 'Bitcoin hacked? & fears'); assert.strictEqual(items[0].source, 'CoinDesk'); assert.strictEqual(items[0].summary, 'Desc text');
+  assert.deepStrictEqual(Intel.parseRss('<<<not xml', { now }), []); assert.deepStrictEqual(Intel.parseRss(null), []);
+  assert.ok(Intel.mentions({ title: 'NEAR surges' }, { name: 'NEAR Protocol', symbol: 'near' }));
+  assert.ok(!Intel.mentions({ title: 'Why near term outlook is weak' }, { name: 'NEAR Protocol', symbol: 'near' }), 'zwykłe słowo to nie moneta');
+  const mk = (src, h) => ({ title: 'Token Y founders accused of fraud, funds missing', link: 'https://a/' + src, ts: now - h * 3600000, source: src, summary: '' });
+  const res = Intel.analyzeCoin({ id: 'y', name: 'Token Y', symbol: 'TKY' }, [mk('A', 2), mk('B', 3), mk('C', 4), { title: 'Other news about Bitcoin', link: 'https://z', ts: now, source: 'Z', summary: '' }], { now });
+  assert.strictEqual(res.length, 1); assert.strictEqual(res[0].count, 3); assert.strictEqual(res[0].anomaly.spreading, true); assert.strictEqual(res[0].anomaly.severity, 5); assert.strictEqual(res[0].tone, 'bearish');
+  const s = Intel.sentiment(res, now); assert.strictEqual(s.bearish, 1);
+});
+test('anomalie rynkowe: odklejenie stablecoina, ruch ceny, rozbieżność źródeł', () => {
+  const dep = Intel.marketAnomalies({ id: 'u' }, { usdPrice: 0.96 }, null, { stable: true }); assert.strictEqual(dep[0].kind, 'depeg'); assert.strictEqual(dep[0].severity, 5);
+  assert.deepStrictEqual(Intel.marketAnomalies({ id: 'u' }, { usdPrice: 0.999 }, null, { stable: true }), []);
+  const mv = Intel.marketAnomalies({ id: 'a' }, { change24h: -27, change1h: 1, marketCap: 1e9, volume: 2e9 }, null); assert.deepStrictEqual(mv.map((x) => x.kind), ['move', 'volume']);
+  const cons = Oracles.consensus([{ source: 'coinbase', price: 100 }, { source: 'binance', price: 101 }, { source: 'coingecko', price: 115 }]);
+  assert.ok(Intel.marketAnomalies({ id: 'a' }, { change24h: 1, change1h: 0 }, cons).some((x) => x.kind === 'divergence'));
+});
+test('KVCache: zapis, odczyt, wiek, czyszczenie (w pamięci)', async () => {
+  const c = KVCache.create(null);
+  await c.set('k', { a: 1 }); assert.deepStrictEqual(await c.get('k'), { a: 1 }); assert.strictEqual(await c.get('k', -1), null); assert.strictEqual(await c.get('brak'), null);
+  await c.clear(); assert.strictEqual(await c.get('k'), null);
+});
+
 console.log('Podgląd w przeglądarce');
 const http = require('http');
 const req = (port, p, { method = 'GET', headers = {}, body } = {}) => new Promise((resolve, reject) => {
@@ -305,7 +532,7 @@ const serverTest = async () => {
     getState: () => state,
     setData: (d) => { state.data = d; state.rev++; },
     setSettings: (patch) => { state.settings = { ...state.settings, ...patch }; state.rev++; return state.settings; },
-    fetchJson: async () => { calls.fetch++; return { status: 200, data: [{ id: 'bitcoin' }] }; },
+    remote: new Remote(async (url) => { calls.fetch++; return new Response(JSON.stringify([{ id: 'bitcoin' }]), { status: 200, headers: { 'content-type': 'application/json' } }); }),
     root: path.join(__dirname, '..', 'src', 'renderer'), iconFile: path.join(__dirname, '..', 'src', 'assets', 'icon.png'), version: '9.9.9'
   });
   srv.apply({ enabled: true, port });
@@ -327,12 +554,15 @@ const serverTest = async () => {
     const w = JSON.parse((await post('/api/data', { watch: [], lots: { bitcoin: [{ amount: 1 }] } })).text);
     assert.strictEqual(w.rev, 2);
     assert.strictEqual(JSON.parse((await req(port, '/api/rev')).text).rev, 2);
-    await post('/api/settings', { market: { currency: 'pln' }, browser: { enabled: false }, window: { closeAction: 'quit' } });
-    assert.strictEqual(state.settings.market.currency, 'pln'); assert.strictEqual(state.settings.browser, undefined, 'przeglądarka nie steruje serwerem'); assert.strictEqual(state.settings.window, undefined);
-    const u = encodeURIComponent('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd');
-    await req(port, '/api/json?url=' + u); await req(port, '/api/json?url=' + u);
-    assert.strictEqual(calls.fetch, 1, 'wspólna pamięć notowań');
-    assert.strictEqual((await req(port, '/api/json?url=' + encodeURIComponent('https://example.com/x'))).status, 500, 'tylko adresy CoinGecko');
+    await post('/api/settings', { market: { currency: 'pln', evil: 1 }, browser: { enabled: false }, window: { closeAction: 'quit' }, '__proto__': { polluted: 1 } });
+    assert.strictEqual(state.settings.market.currency, 'pln'); assert.strictEqual(state.settings.browser, undefined, 'przeglądarka nie steruje serwerem'); assert.strictEqual(state.settings.window, undefined); assert.strictEqual(state.settings.market.evil, undefined, 'nieznane pola odrzucone'); assert.strictEqual({}.polluted, undefined);
+    const fetchReq = (obj, h2 = { 'x-cointracko': '1' }) => post('/api/fetch', obj, h2);
+    const u = 'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd';
+    await fetchReq({ url: u }); const second = JSON.parse((await fetchReq({ url: u })).text);
+    assert.strictEqual(calls.fetch, 1, 'wspólna pamięć notowań'); assert.deepStrictEqual(second.data, [{ id: 'bitcoin' }]);
+    assert.notStrictEqual((await fetchReq({ url: 'https://example.com/x' })).status, 200, 'tylko adresy z listy dozwolonych');
+    assert.strictEqual((await fetchReq({ url: u }, {})).status, 403, 'zapytanie bez nagłówka odrzucone (CSRF)');
+    assert.strictEqual((await req(port, '/api/json?url=' + encodeURIComponent(u))).status, 404, 'stary punkt API usunięty');
     srv.apply({ enabled: false, port });
     await new Promise((r) => setTimeout(r, 100));
     assert.ok(!srv.status().running, 'wyłączony serwer nie nasłuchuje');

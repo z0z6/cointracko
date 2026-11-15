@@ -2,14 +2,16 @@
 // Prosty, trwały magazyn danych w pliku JSON (zapis atomowy).
 const fs = require('fs');
 const path = require('path');
-const { DEFAULT_SETTINGS, DEFAULT_DATA, deepMerge, sanitizeData } = require('../renderer/core');
+const { DEFAULT_SETTINGS, DEFAULT_DATA, sanitizeSettings, sanitizeData } = require('../renderer/core');
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
+const { deepMerge: deepMergeSettings } = require('../renderer/core');
 
 class Store {
   constructor(dir) {
     this.dir = dir;
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(dir, 0o700); } catch (_) { /* np. system plików bez uprawnień */ }
     this.file = path.join(dir, 'cointracko-dane.json');
     this.state = this._load();
     this.rev = 1; // licznik zmian – przeglądarka sprawdza go, żeby wiedzieć, kiedy odświeżyć dane
@@ -18,8 +20,7 @@ class Store {
   _load() {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      const settings = deepMerge(DEFAULT_SETTINGS, raw.settings || {});
-      delete settings.ai; delete settings.import; // dawne ustawienia importu ze zrzutu i konta Claude
+      const settings = sanitizeSettings(raw.settings); // nieznane i dawne klucze (np. import ze zrzutu, konto Claude) są odrzucane
       return { version: 1, settings, data: sanitizeData(raw.data) };
     } catch (e) {
       if (fs.existsSync(this.file)) {
@@ -30,8 +31,9 @@ class Store {
   }
 
   save() {
+    // zapis atomowy; plik z danymi (i opcjonalnym kluczem API) czytelny tylko dla właściciela
     const tmp = this.file + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, this.file);
   }
 
@@ -39,7 +41,7 @@ class Store {
   get data() { return this.state.data; }
 
   updateSettings(patch) {
-    this.state.settings = deepMerge(this.state.settings, patch);
+    this.state.settings = sanitizeSettings(deepMergeSettings(this.state.settings, patch));
     this.rev++;
     this.save();
     return this.state.settings;

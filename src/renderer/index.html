@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' data: blob: https://api.coingecko.com;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://coin-images.coingecko.com https://assets.coingecko.com; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>CoinTracko</title>
   <link rel="icon" type="image/png" href="icon.png">
   <link rel="icon" type="image/png" href="icon.png">
@@ -32,10 +32,17 @@
   <script src="icons.js"></script>
   <script src="ui.js"></script>
   <script src="core.js"></script>
+  <script src="allowlist.js"></script>
+  <script src="remote.js"></script>
   <script src="market.js"></script>
+  <script src="cache.js"></script>
+  <script src="oracles.js"></script>
+  <script src="history.js"></script>
+  <script src="intel.js"></script>
   <script src="platform.js"></script>
   <script src="chart.js"></script>
   <script src="dev-mock.js"></script>
+  <script src="extras.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

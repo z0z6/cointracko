@@ -64,7 +64,7 @@
       load: async () => { const st = await call('/api/state'); rev = st.rev; return { settings: st.settings, data: st.data }; },
       saveSettings: async (patch) => { const r = await call('/api/settings', patch); return r.settings; },
       saveData: async (data) => { const r = await call('/api/data', data); rev = r.rev; return true; },
-      getJson: async (url, key) => { const r = await call(`/api/json?url=${encodeURIComponent(url)}&key=${encodeURIComponent(key || '')}`); return { status: r.status, data: r.data }; },
+      fetchRemote: async (req) => { const r = await call('/api/fetch', req); return { status: r.status, data: r.data, text: r.text }; },
       notify: async () => false, // alerty i powiadomienia obsługuje okno aplikacji
       setTrayInfo: async () => true,
       windowControl: async () => false,

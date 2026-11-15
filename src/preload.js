@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('api', {
   getState: () => call('state:get'),
   setSettings: (patch) => call('settings:set', patch),
   setData: (data) => call('data:set', data),
-  getJson: (url, key) => call('net:getJson', url, key),
+  fetchRemote: (req) => call('net:fetch', req),
   notify: (title, body) => call('notify', title, body),
   setTrayInfo: (text) => call('tray:info', text),
   browserStatus: () => call('browser:status'),

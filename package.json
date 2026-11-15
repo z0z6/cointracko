@@ -1,7 +1,7 @@
 {
   "name": "cointracko",
   "productName": "CoinTracko",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "CoinTracko – notowania kryptowalut na żywo, portfel, alerty i wykresy",
   "main": "src/main/main.js",
   "author": "z0z6",
@@ -26,6 +26,7 @@
     "@capacitor/filesystem": "^8.1.5",
     "@capacitor/local-notifications": "^8.0.0",
     "@capacitor/share": "^8.0.3",
+    "@electron/fuses": "^1.8.0",
     "@fontsource-variable/inter": "^5.0.0",
     "electron": "^45.3.2",
     "electron-builder": "^26.0.0"
@@ -41,7 +42,8 @@
     "files": [
       "src/**/*",
       "package.json",
-      "!**/*.map"
+      "!**/*.map",
+      "!**/*.md"
     ],
     "afterPack": "build/afterPack.js",
     "linux": {
@@ -60,7 +62,11 @@
       "artifactName": "CoinTracko-${version}-linux-amd64.deb",
       "packageCategory": "finance",
       "priority": "optional"
-    }
+    },
+    "electronLanguages": [
+      "pl",
+      "en-US"
+    ]
   },
   "desktopName": "cointracko.desktop"
 }

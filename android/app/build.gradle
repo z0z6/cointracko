@@ -21,14 +21,24 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
-    // Stały klucz podpisu trzymany w repozytorium: każda kompilacja z GitHub Actions ma ten sam podpis,
-    // więc nową wersję APK można zainstalować na starej bez utraty danych. Do publikacji w sklepie użyj własnego klucza.
+    // Podpis: gdy w środowisku (GitHub Actions: sekrety) podano własny klucz, używamy go; w przeciwnym razie – stały klucz
+    // z repozytorium, dzięki któremu kolejne wersje APK instalują się na poprzednich bez utraty danych.
+    // Własny klucz ustawia się sekretami ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+    // (uwaga: zmiana klucza wymaga jednorazowej deinstalacji dotychczasowej aplikacji – Android nie pozwala zmienić podpisu przy aktualizacji).
     signingConfigs {
         shared {
             storeFile file('cointracko.keystore')
             storePassword 'cointracko'
             keyAlias 'cointracko'
             keyPassword 'cointracko'
+        }
+        if (System.getenv('ANDROID_KEYSTORE_FILE')) {
+            own {
+                storeFile file(System.getenv('ANDROID_KEYSTORE_FILE'))
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
         }
     }
     lint {
@@ -40,7 +50,7 @@ android {
             signingConfig signingConfigs.shared
         }
         release {
-            signingConfig signingConfigs.shared
+            signingConfig System.getenv('ANDROID_KEYSTORE_FILE') ? signingConfigs.own : signingConfigs.shared
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

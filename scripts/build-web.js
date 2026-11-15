@@ -17,7 +17,13 @@ fs.copyFileSync(path.join(root, 'src', 'assets', 'icon.png'), path.join(dst, 'ic
 const pkg = require(path.join(root, 'package.json'));
 const index = path.join(dst, 'index.html');
 let html = fs.readFileSync(index, 'utf8');
-html = html.replace("script-src 'self' 'wasm-unsafe-eval'", "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'");
+html = html.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'");
+// Android łączy się bezpośrednio z serwisami z listy dozwolonych (w wersji desktopowej robi to proces główny)
+const hosts = require('../src/renderer/allowlist').hostsOf().map((h) => 'https://' + h).join(' ');
+html = html.replace("connect-src 'self'", "connect-src 'self' " + hosts);
+// dane przykładowe służą tylko do pracy deweloperskiej – nie trafiają do aplikacji mobilnej
+fs.rmSync(path.join(dst, 'dev-mock.js'), { force: true });
+html = html.replace('  <script src="dev-mock.js"></script>\n', '');
 html = html.replace('<html lang="pl">', `<html lang="pl" data-version="${pkg.version}">`);
 fs.writeFileSync(index, html);
 console.log('[build-web] gotowe: www/ (wersja ' + pkg.version + ')');

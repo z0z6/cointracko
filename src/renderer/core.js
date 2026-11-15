@@ -14,9 +14,15 @@
 
   const DEFAULT_SETTINGS = {
     ui: { theme: 'system' }, // 'system' | 'light' | 'dark'
-    market: { currency: 'usd', refreshSec: 60, cgKey: '' },
+    market: {
+      currency: 'usd', refreshSec: 60, cgKey: '',
+      useConsensus: true, // wyceniaj według średniej ze zgodnych źródeł (oracle + giełdy + CoinGecko)
+      tolerancePct: 2, // źródło odbiegające od mediany o więcej niż tyle % jest odrzucane
+      sources: { pyth: true, redstone: true, chainlink: true, cryptocompare: true, coinbase: true, binance: true, coingecko: true }
+    },
     window: { closeAction: 'tray', autostart: true, startHidden: true }, // closeAction: 'tray' – chowaj do zasobnika, 'minimize' – minimalizuj na pasek zadań, 'quit' – zakończ; autostart: uruchamiaj z systemem (okno schowane, gdy startHidden)
     alerts: { notifications: true },
+    intel: { enabled: true, notify: true, minSeverity: 4 }, // wiadomości i wykrywanie anomalii
     browser: { enabled: false, port: 47820 } // podgląd w przeglądarce (tylko komputer): http://127.0.0.1:port
   };
 
@@ -40,48 +46,113 @@
   const EPS = 1e-12;
   const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !isNaN(Date.parse(v));
 
+  const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
   function deepMerge(base, extra) {
     if (Array.isArray(base)) return Array.isArray(extra) ? extra : base;
     if (base && typeof base === 'object') {
       const out = { ...base };
       if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
-        for (const k of Object.keys(extra)) out[k] = k in base ? deepMerge(base[k], extra[k]) : extra[k];
+        for (const k of Object.keys(extra)) {
+          if (UNSAFE_KEYS.has(k)) continue; // ochrona przed zatruciem prototypu
+          out[k] = hasOwn(base, k) ? deepMerge(base[k], extra[k]) : extra[k];
+        }
       }
       return out;
     }
     return extra === undefined ? base : extra;
   }
 
+  // ───────────────────────── ustawienia: walidacja ─────────────────────────
+  const clampInt = (v, min, max, def) => { const n = Math.round(Number(v)); return isFinite(n) && n >= min && n <= max ? n : def; };
+  const asBool = (v, def) => (typeof v === 'boolean' ? v : def);
+  const oneOf = (v, list, def) => (list.includes(v) ? v : def);
+
+  // Zwraca kompletne, poprawne ustawienia: nieznane klucze są odrzucane, a wartości sprowadzane do dozwolonych zakresów.
+  function sanitizeSettings(raw) {
+    const d = DEFAULT_SETTINGS;
+    const r = deepMerge(d, raw && typeof raw === 'object' ? raw : {});
+    const src = {};
+    for (const k of Object.keys(d.market.sources)) src[k] = asBool(r.market.sources && r.market.sources[k], true);
+    const tol = Number(r.market.tolerancePct);
+    return {
+      ui: { theme: oneOf(r.ui.theme, ['system', 'light', 'dark'], 'system') },
+      market: {
+        currency: hasOwn(CURRENCIES, r.market.currency) ? r.market.currency : 'usd',
+        refreshSec: clampInt(r.market.refreshSec, 15, 3600, 60),
+        cgKey: typeof r.market.cgKey === 'string' && /^[A-Za-z0-9_.\-]{0,200}$/.test(r.market.cgKey) ? r.market.cgKey : '',
+        useConsensus: asBool(r.market.useConsensus, true),
+        tolerancePct: isFinite(tol) && tol >= 0.5 && tol <= 20 ? tol : 2,
+        sources: src
+      },
+      window: { closeAction: oneOf(r.window.closeAction, ['tray', 'minimize', 'quit'], 'tray'), autostart: asBool(r.window.autostart, true), startHidden: asBool(r.window.startHidden, true) },
+      alerts: { notifications: asBool(r.alerts.notifications, true) },
+      intel: { enabled: asBool(r.intel.enabled, true), notify: asBool(r.intel.notify, true), minSeverity: clampInt(r.intel.minSeverity, 1, 5, 4) },
+      browser: { enabled: asBool(r.browser.enabled, false), port: clampInt(r.browser.port, 1024, 65535, 47820) }
+    };
+  }
+
+  // Zmiana ustawień od strony przeglądarki lub okna: tylko wskazane sekcje, tylko znane pola.
+  function pickSettingsPatch(patch, sections) {
+    const out = {};
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return out;
+    for (const sec of sections) {
+      if (patch[sec] && typeof patch[sec] === 'object' && !Array.isArray(patch[sec]) && hasOwn(DEFAULT_SETTINGS, sec)) {
+        const o = {};
+        for (const k of Object.keys(patch[sec])) if (hasOwn(DEFAULT_SETTINGS[sec], k)) o[k] = patch[sec][k];
+        out[sec] = o;
+      }
+    }
+    return out;
+  }
+
   // Porządkuje dane użytkownika wczytane z dysku (odporność na uszkodzony lub stary plik).
+  const COIN_ID = /^[a-z0-9][a-z0-9._-]{0,99}$/;
+  const okId = (id) => typeof id === 'string' && COIN_ID.test(id) && !UNSAFE_KEYS.has(id);
+  const SAFE_IMAGE = /^(https:\/\/(coin-images|assets)\.coingecko\.com\/[\w\-./%?=&]{1,300}|data:image\/(png|jpeg|webp|svg\+xml)[;,][^"'\s]{0,3000})$/;
+  const MAX_WATCH = 500; const MAX_LOTS = 5000; const MAX_ALERTS = 500;
+  const str = (v, n) => String(v == null ? '' : v).slice(0, n);
+
+  function sanitizeAlert(a) {
+    if (!a || typeof a !== 'object' || !okId(a.coinId) || !hasOwn(ALERT_TYPES, a.type) || !isFinite(Number(a.value))) return null;
+    const num = (v) => (v == null || !isFinite(Number(v)) ? undefined : Number(v));
+    const out = {
+      id: str(a.id || Math.random().toString(36).slice(2, 10), 40), coinId: a.coinId, type: a.type, value: Number(a.value),
+      currency: hasOwn(CURRENCIES, a.currency) ? a.currency : 'usd', repeat: !!a.repeat, active: a.active !== false, armed: a.armed !== false
+    };
+    if (num(a.lastTriggered) !== undefined) out.lastTriggered = num(a.lastTriggered);
+    if (num(a.lastPrice) !== undefined) out.lastPrice = num(a.lastPrice);
+    return out;
+  }
+
+  // Porządkuje dane użytkownika wczytane z dysku, z pliku lub od przeglądarki (odporność na uszkodzony, stary lub złośliwy plik).
   function sanitizeData(raw) {
     const d = raw && typeof raw === 'object' ? raw : {};
-    const watch = (Array.isArray(d.watch) ? d.watch : []).filter((w) => w && typeof w.id === 'string' && w.id)
-      .map((w) => ({ id: w.id, symbol: String(w.symbol || ''), name: String(w.name || w.id), image: String(w.image || '') }));
+    const watch = (Array.isArray(d.watch) ? d.watch : []).filter((w) => w && okId(w.id))
+      .map((w) => ({ id: w.id, symbol: str(w.symbol, 24), name: str(w.name || w.id, 80), image: typeof w.image === 'string' && SAFE_IMAGE.test(w.image) ? w.image : '' }));
     const seen = new Set();
-    const uniq = watch.filter((w) => (seen.has(w.id) ? false : seen.add(w.id)));
-    const alerts = (Array.isArray(d.alerts) ? d.alerts : []).filter((a) => a && a.coinId && ALERT_TYPES[a.type] && isFinite(Number(a.value)))
-      .map((a) => ({ ...a, value: Number(a.value), active: a.active !== false, repeat: !!a.repeat }));
+    const uniq = watch.filter((w) => (seen.has(w.id) ? false : seen.add(w.id))).slice(0, MAX_WATCH);
+    const alerts = (Array.isArray(d.alerts) ? d.alerts : []).map(sanitizeAlert).filter(Boolean).slice(0, MAX_ALERTS);
     const lots = {};
-    for (const [id, list] of Object.entries(d.lots && typeof d.lots === 'object' ? d.lots : {})) {
-      const clean = (Array.isArray(list) ? list : []).map(sanitizeLot).filter(Boolean);
+    for (const [id, list] of Object.entries(d.lots && typeof d.lots === 'object' && !Array.isArray(d.lots) ? d.lots : {})) {
+      if (!okId(id)) continue;
+      const clean = (Array.isArray(list) ? list : []).slice(0, MAX_LOTS).map(sanitizeLot).filter(Boolean);
       if (clean.length) lots[id] = sortLots(clean);
     }
     // Migracja ze starego formatu: ilość zapisana „na sztywno” (bez wpisów) staje się zwykłym, edytowalnym wpisem.
-    for (const [id, v] of Object.entries(d.holdings && typeof d.holdings === 'object' ? d.holdings : {})) {
+    for (const [id, v] of Object.entries(d.holdings && typeof d.holdings === 'object' && !Array.isArray(d.holdings) ? d.holdings : {})) {
       const n = Number(v);
-      if (!isFinite(n) || n <= 0) continue;
+      if (!okId(id) || !isFinite(n) || n <= 0) continue;
       const missing = n - lotsNet(lots[id]);
       if (missing > EPS) lots[id] = sortLots([...(lots[id] || []), { id: 'start-' + id, type: 'buy', date: '', amount: missing, price: null, currency: 'usd' }]);
     }
     const holdings = holdingsFromLots(lots);
-    return {
-      watch: uniq,
-      holdings,
-      lots,
-      alerts,
-      alertLog: (Array.isArray(d.alertLog) ? d.alertLog : []).slice(0, 100),
-      hints: d.hints && typeof d.hints === 'object' ? d.hints : {}
-    };
+    const log = (Array.isArray(d.alertLog) ? d.alertLog : []).slice(0, 100).filter((l) => l && typeof l === 'object')
+      .map((l) => ({ at: isFinite(Number(l.at)) ? Number(l.at) : 0, coinId: str(l.coinId, 100), title: str(l.title, 200), body: str(l.body, 400) }));
+    const hints = {};
+    const dh = d.hints && typeof d.hints === 'object' && !Array.isArray(d.hints) ? d.hints : {};
+    for (const k of ['seeded', 'trayHint']) if (dh[k] === true) hints[k] = true;
+    return { watch: uniq, holdings, lots, alerts, alertLog: log, hints };
   }
 
   // ───────────────────────── formatowanie ─────────────────────────
@@ -564,8 +635,9 @@
   }
 
   return {
+    isStable: (sym) => STABLES.has(String(sym || '').toLowerCase()),
     CURRENCIES, ALERT_TYPES, DEFAULT_SETTINGS, DEFAULT_DATA, STARTER_WATCH,
-    deepMerge, sanitizeData,
+    deepMerge, sanitizeData, sanitizeSettings, pickSettingsPatch,
     fmtMoney, fmtAmount, fmtPct, parseAmount,
     portfolio,
     sanitizeLot, sortLots, lotsNet, lotsBalance, holdingsFromLots, convert, positionStats, lotResult, applyLots, newLot,

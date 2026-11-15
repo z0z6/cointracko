@@ -20,7 +20,11 @@ const state = {
   chartDays: 7,
   settingsTab: 'general',
   browser: null, // stan podglądu w przeglądarce (tylko komputer)
-  onQuotes: null
+  onQuotes: null,
+  consensus: {}, // id → porównanie cen z wielu źródeł (extras.js)
+  priceSrc: { at: 0, errors: {}, ok: [], fx: null },
+  histMode: 'lots', // wykres historii portfela: 'lots' (wg wpisów) | 'current' (obecne ilości)
+  news: { items: {}, at: 0, loading: false, errors: 0, feeds: null, filter: 'all', coin: '' }
 };
 
 const ALLOC_COLORS = ['#0a84ff', '#30d158', '#ff9f0a', '#bf5af2', '#ff453a', '#64d2ff', '#ffd60a', '#8e8e93'];
@@ -70,13 +74,14 @@ async function init() {
 
   render();
   refresh(); // po uruchomieniu od razu łączymy się z siecią i pobieramy notowania
+  startIntelLoop(); // wiadomości i anomalie w tle
 }
 
 function applyExternal({ data, settings }) {
   if (settings) {
     const curChanged = settings.market && settings.market.currency !== cur();
     state.settings = settings;
-    if (curChanged) { state.market = {}; state.top = null; state.rates = null; Market.clearCache(); state.conn.lastUpdate = 0; refresh(true); }
+    if (curChanged) { state.market = {}; state.consensus = {}; state.top = null; state.rates = null; Market.clearCache(); state.conn.lastUpdate = 0; refresh(true); }
   }
   if (data) state.data = Core.sanitizeData(data);
   softRender();
@@ -123,8 +128,10 @@ async function refresh(manual) {
   renderSidebar();
   try {
     const ids = trackedIds();
+    const oracleJob = startOracles(ids); // ceny z oracle i giełd pobierane równolegle z notowaniami
     const quotes = await Market.quotes(ids, cur());
     for (const q of quotes) state.market[q.id] = q;
+    applyOracles(await oracleJob, ids);
     // uzupełnij ikony i nazwy obserwowanych (np. po dodaniu z wyszukiwarki lub ze zrzutu)
     let touched = false;
     for (const w of state.data.watch) {
@@ -281,6 +288,7 @@ function renderSidebar() {
     ['market', 'chart', 'Rynek'],
     ['portfolio', 'wallet', 'Portfel'],
     ['alerts', 'bell', 'Alerty', active || null],
+    ['news', 'news', 'Wiadomości', hiAnomalies().length || null],
     ['stats', 'pie', 'Statystyki']
   ];
   const cv = state.view === 'coin' ? state.backTo : state.view;
@@ -311,12 +319,12 @@ function render(keepScroll) {
   const top = c.scrollTop;
   if (chartHandle) { chartHandle.destroy(); chartHandle = null; }
   state.onQuotes = null;
-  const views = { dashboard: viewDashboard, market: viewMarket, portfolio: viewPortfolio, alerts: viewAlerts, stats: viewStats, settings: viewSettings, coin: viewCoin };
+  const views = { dashboard: viewDashboard, market: viewMarket, portfolio: viewPortfolio, alerts: viewAlerts, news: viewNews, stats: viewStats, settings: viewSettings, coin: viewCoin };
   const el = (views[state.view] || viewDashboard)();
   if (!keepScroll) el.classList.add('fade-in');
   c.replaceChildren(el);
   if (keepScroll) c.scrollTop = top;
-  const titles = { dashboard: 'Pulpit', market: 'Rynek', portfolio: 'Portfel', alerts: 'Alerty', stats: 'Statystyki', settings: 'Ustawienia', coin: coinInfo(state.coinId).name };
+  const titles = { dashboard: 'Pulpit', market: 'Rynek', portfolio: 'Portfel', alerts: 'Alerty', news: 'Wiadomości', stats: 'Statystyki', settings: 'Ustawienia', coin: coinInfo(state.coinId).name };
   document.getElementById('window-title').textContent = titles[state.view] + ' — CoinTracko';
 }
 
@@ -359,7 +367,7 @@ function viewDashboard() {
   const p = Core.portfolio(state.data.holdings, state.market);
   const hasHoldings = Object.keys(state.data.holdings).length > 0;
   const loading = !state.conn.lastUpdate && state.conn.status !== 'offline';
-  const page = h('div', { class: 'page' }, offlineBanner());
+  const page = h('div', { class: 'page' }, offlineBanner(), anomalyBanner());
 
   if (hasHoldings) {
     const segs = allocSegments(p);
@@ -762,6 +770,7 @@ function importFile() {
     input.remove();
     if (!f) return;
     try {
+      if (f.size > 5 * 1024 * 1024) throw new Error('Plik jest zbyt duży jak na plik CoinTracko (limit 5 MB).');
       const imp = Core.parseImport(await f.text());
       const c = imp.counts;
       if (!c.holdings && !c.watch && !c.alerts) throw new Error('Ten plik nie zawiera żadnych danych portfela.');
@@ -787,8 +796,6 @@ function importFile() {
 }
 
 // ───────────────────────── statystyki ─────────────────────────
-const STAT_RANGES = [{ value: 7, label: '7 dni' }, { value: 30, label: '30 dni' }, { value: 90, label: '90 dni' }, { value: 365, label: '1 rok' }];
-
 function viewStats() {
   const ps = Core.portfolioStats(state.data, state.market, cur(), state.rates, coinInfo);
   const p = Core.portfolio(state.data.holdings, state.market);
@@ -835,49 +842,8 @@ function viewStats() {
         fact('Najsłabszy od zakupu', perf(ps.worstPnl, 'pnlPct'), null, ps.worstPnl && pctClass(ps.worstPnl.pnlPct)),
         fact('Aktywne alerty', `${state.data.alerts.filter((a) => a.active).length} · uruchomione ${state.data.alertLog.length}`)))));
 
-  // wartość w czasie
-  const box = h('div', { class: 'chart-box' });
-  const readout = h('div', { class: 'chart-readout' });
-  const histFacts = h('div', { class: 'kv-grid', style: { marginTop: '8px' } });
-  let token = 0;
-  const loadHistory = async () => {
-    const my = ++token;
-    const days = state.statsDays;
-    if (chartHandle) { chartHandle.destroy(); chartHandle = null; }
-    box.replaceChildren(h('div', { class: 'center' }, spinner(18), 'Liczę wartość portfela w czasie…'));
-    readout.textContent = ''; histFacts.replaceChildren();
-    const picks = p.items.filter((i) => i.value != null).slice(0, 6);
-    const series = [];
-    for (const i of picks) {
-      try { series.push({ amount: i.amount, points: await Market.chart(i.id, cur(), days), share: i.share }); } catch (_) { /* pomijamy monetę bez historii */ }
-      if (my !== token || state.view !== 'stats') return;
-    }
-    const pts = Core.combineHistory(series);
-    if (pts.length < 2) { box.replaceChildren(h('div', { class: 'center' }, h('div', null, 'Nie udało się pobrać historii notowań.', h('div', { style: { marginTop: '10px' } }, h('button', { class: 'btn', onclick: loadHistory }, iconEl('refresh', 14), 'Spróbuj ponownie'))))); return; }
-    const ss = Core.seriesStats(pts);
-    const covered = series.reduce((a, x) => a + x.share, 0);
-    const setDefault = () => readout.replaceChildren('Zmiana w okresie ', h('b', { class: pctClass(ss.changePct) }, pct(ss.changePct)), ` (${signed(ss.changeValue)})`);
-    const canvas = h('canvas', { role: 'img', 'aria-label': `Wartość portfela w czasie, zmiana ${pct(ss.changePct)}` });
-    box.replaceChildren(canvas);
-    chartHandle = Charts.priceChart(canvas, pts, { days, format: (v) => money(v, { compact: true }), onHover: (hv) => {
-      if (!hv) { setDefault(); return; }
-      const d = (hv.price / hv.base - 1) * 100;
-      readout.replaceChildren(hv.label + ' · ', h('b', null, money(hv.price)), ' · ', h('span', { class: pctClass(d) }, pct(d)));
-    } });
-    setDefault();
-    const cell = (k, v, cls) => h('div', { class: 'kv' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (cls || '') }, v));
-    histFacts.replaceChildren(
-      cell('Najwyższa wartość', `${money(ss.max[1])} · ${new Date(ss.max[0]).toLocaleDateString('pl-PL', { day: 'numeric', month: 'short' })}`),
-      cell('Najniższa wartość', `${money(ss.min[1])} · ${new Date(ss.min[0]).toLocaleDateString('pl-PL', { day: 'numeric', month: 'short' })}`),
-      cell('Największe obsunięcie', pct(ss.maxDrawdownPct), pctClass(ss.maxDrawdownPct)),
-      cell('Uwzględniono', `${series.length} z ${p.items.length} pozycji · ${pct(covered * 100, 0).replace('+', '')} wartości`));
-  };
-  page.append(h('div', { class: 'card chart-card', style: { marginTop: '16px' } },
-    h('div', { class: 'chart-top' }, h('div', { class: 'card-title', style: { margin: 0 } }, iconEl('chart', 16), 'Wartość portfela w czasie'),
-      segmented(STAT_RANGES, state.statsDays, (v) => { state.statsDays = v; loadHistory(); }), h('div', { class: 'spacer' }), readout),
-    box, histFacts,
-    h('p', { class: 'group-footer' }, 'Wykres pokazuje, ile byłyby warte obecnie posiadane ilości przy dawnych cenach (największe pozycje portfela). Nie uwzględnia dat zakupów.')));
-  setTimeout(loadHistory, 0);
+  // wartość w czasie (historia dzienna do 6 lat – extras.js)
+  page.append(portfolioHistoryCard(p));
 
   // wyniki pozycji
   page.append(h('div', { class: 'section-head' }, h('h2', null, 'Wyniki pozycji')));
@@ -912,7 +878,7 @@ function addHoldingFlow() {
 }
 
 // ───────────────────────── szczegóły i wykres ─────────────────────────
-const RANGES = [{ value: 1, label: '24 h' }, { value: 7, label: '7 dni' }, { value: 30, label: '30 dni' }, { value: 90, label: '90 dni' }, { value: 365, label: '1 rok' }];
+const RANGES = [{ value: 1, label: '24 h' }, { value: 7, label: '7 dni' }, { value: 30, label: '30 dni' }, { value: 90, label: '90 dni' }, { value: 365, label: '1 rok' }, { value: 730, label: '2 lata' }, { value: 1825, label: '5 lat' }, { value: 2200, label: '6 lat' }];
 
 function viewCoin() {
   const id = state.coinId;
@@ -924,11 +890,13 @@ function viewCoin() {
   const valueEl = h('div', { class: 'muted', style: { marginTop: '8px' } });
   const readout = h('div', { class: 'chart-readout' });
   const box = h('div', { class: 'chart-box' });
+  const srcBox = h('div');
   let rangeInfo = '';
 
   const fillQuotes = () => {
     const q = state.market[id] || {};
     priceEl.textContent = money(q.price);
+    srcBox.replaceChildren(priceSourcesCard(id));
     chipBox.replaceChildren(pctChip(q.change24h, '24 h'));
     const cell = (k, v, cls) => h('div', { class: 'kv' }, h('div', { class: 'k' }, k), h('div', { class: 'v ' + (cls || '') }, v));
     kv.replaceChildren(
@@ -955,7 +923,7 @@ function viewCoin() {
     box.replaceChildren(h('div', { class: 'center' }, spinner(18), 'Wczytuję wykres…'));
     readout.textContent = '';
     try {
-      const pts = await Market.chart(id, cur(), days);
+      const pts = await coinChartPoints(id, days);
       if (my !== token || state.view !== 'coin' || state.coinId !== id) return;
       if (pts.length < 2) throw new Error('Brak danych historycznych dla tej kryptowaluty.');
       const change = (pts[pts.length - 1][1] / pts[0][1] - 1) * 100;
@@ -1000,6 +968,7 @@ function viewCoin() {
         h('div', { class: 'chart-top' }, segmented(RANGES, state.chartDays, (v) => { state.chartDays = v; loadChart(); }), h('div', { class: 'spacer' }), readout),
         box),
       h('div', { class: 'card', style: { marginTop: '16px', overflow: 'hidden' } }, kv),
+      srcBox,
       h('div', { class: 'two-col' },
         h('div', { class: 'card card-pad' },
           h('div', { class: 'card-title' }, iconEl('wallet', 16), 'Twoja pozycja'),
@@ -1122,9 +1091,10 @@ function editAlert(src) {
 function viewSettings() {
   const tabs = [
     { value: 'general', label: 'Ogólne', icon: 'gear' },
+    { value: 'sources', label: 'Źródła i wiadomości', icon: 'shield' },
     { value: 'about', label: 'O aplikacji', icon: 'info' }
   ];
-  const body = { general: settingsGeneral, about: settingsAbout }[state.settingsTab]();
+  const body = { general: settingsGeneral, sources: settingsSources, about: settingsAbout }[state.settingsTab]();
   return h('div', null,
     h('div', { class: 'toolbar' }, h('h1', null, 'Ustawienia')),
     h('div', { class: 'page' },
@@ -1139,7 +1109,7 @@ function settingsGeneral() {
   return h('div', null,
     group('Notowania', [
       row('Waluta', select(Object.entries(Core.CURRENCIES).map(([value, c]) => ({ value, label: c.label })), s.market.currency, async (v) => {
-        await saveSettings({ market: { currency: v } }, true); state.market = {}; state.top = null; state.rates = null; Market.clearCache(); state.conn.lastUpdate = 0; refresh(true); render();
+        await saveSettings({ market: { currency: v } }, true); state.market = {}; state.consensus = {}; state.top = null; state.rates = null; Market.clearCache(); state.conn.lastUpdate = 0; refresh(true); render();
       }), { icon: 'coins', color: 'var(--green)', hint: 'W tej walucie pokazywane są ceny i wartość portfela.' }),
       row('Odświeżanie notowań', select([{ value: '30', label: 'co 30 sekund' }, { value: '60', label: 'co minutę' }, { value: '120', label: 'co 2 minuty' }, { value: '300', label: 'co 5 minut' }], String(s.market.refreshSec), async (v) => { await saveSettings({ market: { refreshSec: Number(v) } }, true); refresh(); }),
         { icon: 'refresh', color: 'var(--accent)', hint: 'Po uruchomieniu aplikacja sama łączy się z siecią i aktualizuje dane.' }),

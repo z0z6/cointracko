@@ -62,4 +62,67 @@ window.installMarketMock = function installMarketMock() {
     }
     return {};
   });
+
+  installRemoteMock();
+
+  // Pozostałe źródła (oracle, giełdy, historia dzienna, wiadomości) – dane przykładowe z niewielkimi, deterministycznymi odchyłkami.
+  function installRemoteMock() {
+    const bySym = Object.fromEntries(COINS.map((c, i) => [c[1].toUpperCase(), { i, id: c[0], name: c[2], usd: c[3] }]));
+    const feedId = (i) => (i + 1).toString(16).padStart(64, 'a');
+    const drift = (src, sym) => { const k = (seed(src + sym)() - 0.5) * 0.003; return sym === 'DOGE' && src === 'binance' ? 1.09 : 1 + k; };
+    const px = (sym, src) => bySym[sym].usd * tick() * drift(src, sym);
+    const rssItem = (title, source, hours, link) => `<item><title>${title} - ${source}</title><link>${link}</link><pubDate>${new Date(Date.now() - hours * 3600000).toUTCString()}</pubDate><source url="https://example.com">${source}</source><description>${title}</description></item>`;
+    const news = (q) => {
+      const hit = COINS.find((c) => q.includes(c[2]) || q.includes(c[1].toUpperCase()));
+      if (!hit) return '<rss><channel></channel></rss>';
+      const n = hit[2];
+      const items = [];
+      if (hit[0] === 'solana') items.push(rssItem('Solana network outage halts block production for hours', 'CoinDesk', 3, 'https://example.com/sol1'), rssItem('Solana validators report outage, chain halt under investigation', 'The Block', 4, 'https://example.com/sol2'), rssItem('Solana stalled: outage hits network again', 'Decrypt', 5, 'https://example.com/sol3'));
+      if (hit[0] === 'ethereum') items.push(rssItem('Ethereum spot ETF inflows hit record high as institutional adoption grows', 'Bloomberg', 6, 'https://example.com/eth1'), rssItem('Ethereum upgrade goes live on mainnet', 'Cointelegraph', 20, 'https://example.com/eth2'));
+      if (hit[0] === 'bitcoin') items.push(rssItem('Bitcoin rallies as strategic partnership announced with major bank', 'Reuters', 2, 'https://example.com/btc1'), rssItem('Bitcoin faces selloff fears, analysts warn of correction', 'CNBC', 9, 'https://example.com/btc2'));
+      if (hit[0] === 'dogecoin') items.push(rssItem('Rumors of insolvency spread as exchange pauses withdrawals of Dogecoin', 'CryptoSlate', 7, 'https://example.com/doge1'));
+      if (!items.length) items.push(rssItem(`${n} price analysis: market stays quiet`, 'Decrypt', 12, 'https://example.com/x-' + hit[0]));
+      return `<?xml version="1.0"?><rss><channel>${items.join('')}</channel></rss>`;
+    };
+    Remote.setTransport(async (req) => {
+      await new Promise((r) => setTimeout(r, 80));
+      const u = new URL(req.url);
+      const host = u.hostname;
+      const ok = (data) => ({ status: 200, data });
+      if (host === 'hermes.pyth.network') {
+        if (u.pathname.endsWith('price_feeds')) return ok(COINS.map((c, i) => ({ id: feedId(i), attributes: { asset_type: 'Crypto', base: c[1].toUpperCase(), quote_currency: 'USD', symbol: `Crypto.${c[1].toUpperCase()}/USD` } })));
+        const ids = [...u.searchParams.getAll('ids[]')];
+        return ok({ parsed: ids.map((id) => { const idx = COINS.findIndex((_, k) => feedId(k) === id); const c = COINS[idx]; const p = px(c[1].toUpperCase(), 'pyth'); return { id, price: { price: String(Math.round(p * 1e8)), conf: String(Math.round(p * 1e8 * 0.0005)), expo: -8, publish_time: Math.floor(Date.now() / 1000) - 3 } }; }) });
+      }
+      if (host === 'api.redstone.finance') {
+        const out = {};
+        for (const sym of (u.searchParams.get('symbols') || '').split(',')) if (bySym[sym]) out[sym] = { value: px(sym, 'redstone'), timestamp: Date.now() - 20000, symbol: sym };
+        return ok(out);
+      }
+      if (host === 'min-api.cryptocompare.com') {
+        if (u.pathname.endsWith('pricemulti')) { const out = {}; for (const sym of u.searchParams.get('fsyms').split(',')) if (bySym[sym]) out[sym] = { USD: px(sym, 'cc') }; return ok(out); }
+        const sym = u.searchParams.get('fsym'); const cur = (u.searchParams.get('tsym') || 'USD').toLowerCase();
+        const limit = Number(u.searchParams.get('limit')) || 30; const toTs = Number(u.searchParams.get('toTs')) || Math.floor(Date.now() / 1000);
+        const c = bySym[sym]; if (!c) return ok({ Response: 'Error', Message: 'unknown symbol' });
+        const DAYS = 2300; const w = walk(sym + 'd', DAYS, 0.035); const today = Math.floor(Date.now() / 86400000) * 86400;
+        const data = [];
+        for (let k = 0; k <= limit; k++) {
+          const t = Math.floor(toTs / 86400) * 86400 - (limit - k) * 86400; const age = Math.round((today - t) / 86400);
+          if (age < 0 || age >= DAYS) continue;
+          data.push({ time: t, close: w[DAYS - 1 - age] * c.usd * RATE[cur] });
+        }
+        return ok({ Response: 'Success', Data: { Data: data } });
+      }
+      if (host === 'data-api.binance.vision') return ok(COINS.map((c) => ({ symbol: c[1].toUpperCase() + 'USDT', price: String(px(c[1].toUpperCase(), 'binance')) })));
+      if (host === 'api.coinbase.com') { const rates = { USD: '1', PLN: String(RATE.pln), EUR: String(RATE.eur) }; for (const [sym, c] of Object.entries(bySym)) rates[sym] = String(1 / px(sym, 'coinbase')); return ok({ data: { currency: 'USD', rates } }); }
+      if (host === 'reference-data-directory.vercel.app') return { status: 404 };
+      if (host === 'ethereum-rpc.publicnode.com' || host === 'cloudflare-eth.com') {
+        const word = (n) => BigInt(n).toString(16).padStart(64, '0');
+        return ok(req.body.map((r) => { const to = r.params[0].to.toLowerCase(); const sym = to === '0xf4030086522a5beea4988f8ca5b36dbc97bee88c' ? 'BTC' : 'ETH'; const p = px(sym, 'chainlink'); return { jsonrpc: '2.0', id: r.id, result: '0x' + word(1) + word(Math.round(p * 1e8)) + word(1) + word(Math.floor(Date.now() / 1000) - 600) + word(1) }; }));
+      }
+      if (host === 'news.google.com') return { status: 200, text: news(u.searchParams.get('q') || '') };
+      if (host === 'api.coingecko.com') return { status: 404 };
+      return { status: 200, text: '<rss><channel></channel></rss>' };
+    });
+  }
 };

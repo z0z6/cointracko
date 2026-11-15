@@ -8,6 +8,7 @@
     const d = new Date(t);
     if (days <= 1) return d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
     if (days <= 90) return d.toLocaleDateString('pl-PL', { day: 'numeric', month: 'short' });
+    if (days > 900) return d.toLocaleDateString('pl-PL', { month: 'short', year: 'numeric' });
     return d.toLocaleDateString('pl-PL', { month: 'short', year: '2-digit' });
   }
   function fmtFull(t, days) {
