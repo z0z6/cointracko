@@ -1,6 +1,6 @@
 # CoinTracko
 
-Notowania kryptowalut na żywo, wycena aktywów, kalkulator, alerty z wiadomości i wykresy – na Linuksa (AppImage) i Androida (APK), z jednego kodu.
+Notowania kryptowalut na żywo, wycena aktywów, kalkulator, alerty z wiadomości i wykresy – na Linuksa (AppImage, .deb), Windowsa (przenośny .exe) i Androida (APK), z jednego kodu.
 
 ## Co potrafi
 
@@ -17,22 +17,25 @@ Notowania kryptowalut na żywo, wycena aktywów, kalkulator, alerty z wiadomośc
 - **Odświeżanie przeciągnięciem (Android)** – przeciągnięcie ekranu w dół wymusza pełną aktualizację (notowania z pominięciem pamięci podręcznej, ceny z oracle, kursy walut, wiadomości) z krótką animacją.
 - **Wykresy** – 24 h, 7 dni, 30 dni, 90 dni, 1 rok, 2 lata, 5 lat i 6 lat, z celownikiem pod kursorem; lista obserwowanych i ranking Top 100.
 - **Linux** – okno w stylu macOS z przyciskami po prawej (minimalizuj, maksymalizuj, zamknij); zamknięcie okna chowa aplikację do zasobnika (lub minimalizuje na pasek zadań – do wyboru w Ustawieniach).
-- **Autostart** (Linux) – domyślnie aplikacja uruchamia się razem z systemem (wpis `~/.config/autostart/cointracko.desktop`), od razu pobiera notowania i czeka w zasobniku; w Ustawieniach można to wyłączyć albo zostawić widoczne okno. Działa z AppImage i z paczką `.deb`.
+- **Autostart** (Linux, Windows) – domyślnie aplikacja uruchamia się razem z systemem (Linux: wpis `~/.config/autostart/cointracko.desktop`; Windows: autostart użytkownika, także dla wersji przenośnej), od razu pobiera notowania i czeka w zasobniku; w Ustawieniach można to wyłączyć albo zostawić widoczne okno. Działa z AppImage i z paczką `.deb`.
 
 Źródła danych: CoinGecko, Pyth Network (Hermes), RedStone, Chainlink (odczyt z kontraktu przez publiczny węzeł Ethereum), CryptoCompare, Coinbase, Binance, Google News oraz kanały RSS serwisów branżowych – wszystko publiczne API, bez kluczy.
 
 ## Kompilacja w GitHub Actions
 
-Każdy push na `main` buduje oba pakiety (zakładka **Actions** → ostatnie uruchomienie → **Artifacts**):
+Każdy push na `main` buduje wszystkie pakiety (zakładka **Actions** → ostatnie uruchomienie → **Artifacts**):
 
 | Artefakt | Zawartość |
 |---|---|
 | `CoinTracko-linux-AppImage` | `CoinTracko-<wersja>-linux-x86_64.AppImage` |
+| `CoinTracko-linux-deb` | `CoinTracko-<wersja>-linux-amd64.deb` |
+| `CoinTracko-windows-exe` | `CoinTracko-<wersja>-windows-portable.exe` |
 | `CoinTracko-android-apk` | `CoinTracko-<wersja>-android.apk` |
 
-Tag `v*` (np. `v1.0.0`) dodatkowo publikuje oba pliki jako **Release**.
+Tag `v*` (np. `v1.0.0`) dodatkowo publikuje wszystkie pliki jako **Release**.
 
 Uruchomienie na Linuksie: `chmod +x CoinTracko-*.AppImage && ./CoinTracko-*.AppImage`.
+Na Windowsie: uruchom plik `.exe` (wersja przenośna – bez instalacji; dane zapisują się w folderze `CoinTracko - dane` obok pliku). Przy pierwszym uruchomieniu SmartScreen może ostrzec o nieznanym wydawcy (plik nie jest podpisany certyfikatem) – „Więcej informacji” → „Uruchom mimo to”.
 Na Androidzie: skopiuj plik APK na telefon i zainstaluj (trzeba zezwolić na instalację z nieznanych źródeł).
 
 ## Praca lokalna
@@ -41,7 +44,8 @@ Na Androidzie: skopiuj plik APK na telefon i zainstaluj (trzeba zezwolić na ins
 npm install          # instaluje zależności i kopiuje czcionkę do src/renderer/vendor
 npm start            # uruchamia aplikację (Electron)
 npm test             # testy logiki
-npm run dist:linux   # AppImage w dist/
+npm run dist:linux   # AppImage i .deb w dist/
+npm run dist:win     # przenośny .exe (najlepiej na Windowsie lub w CI)
 npm run android:apk  # APK (wymaga Android SDK i JDK 21)
 ```
 

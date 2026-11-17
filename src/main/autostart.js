@@ -57,7 +57,10 @@ function apply(app, win, { packaged = app.isPackaged } = {}) {
     if (!packaged && enabled) throw new Error('Autostart działa w zainstalowanej aplikacji (AppImage lub .deb), nie w trybie deweloperskim.');
     return setLinuxAutostart(enabled, { exe: execPath(process.env, process.execPath), hidden, dir: autostartDir() });
   }
-  app.setLoginItemSettings({ openAtLogin: enabled, args: hidden ? ['--hidden'] : [] });
+  // Windows, wersja przenośna (.exe): process.execPath wskazuje tymczasowy katalog rozpakowania – autostart musi wskazywać sam plik .exe.
+  const opts = { openAtLogin: enabled, args: hidden ? ['--hidden'] : [] };
+  if (process.platform === 'win32' && process.env.PORTABLE_EXECUTABLE_FILE) opts.path = process.env.PORTABLE_EXECUTABLE_FILE;
+  app.setLoginItemSettings(opts);
   return null;
 }
 

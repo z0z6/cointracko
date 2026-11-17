@@ -16,7 +16,8 @@
     "build:web": "node scripts/build-web.js",
     "android:sync": "node scripts/build-web.js && cap sync android",
     "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
-    "dist:deb": "electron-builder --linux deb --publish never"
+    "dist:deb": "electron-builder --linux deb --publish never",
+    "dist:win": "electron-builder --win portable --x64 --publish never"
   },
   "devDependencies": {
     "@capacitor/android": "^8.0.0",
@@ -66,7 +67,22 @@
     "electronLanguages": [
       "pl",
       "en-US"
-    ]
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "CoinTracko-${version}-windows-portable.${ext}"
+    },
+    "portable": {
+      "artifactName": "CoinTracko-${version}-windows-portable.exe"
+    }
   },
   "desktopName": "cointracko.desktop"
 }
